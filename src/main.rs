@@ -5,8 +5,50 @@ use std::{
 };
 
 use cargo_metadata::MetadataCommand;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct OutputCollection {
+    invocations: Vec<Invocation>,
+}
+
+impl OutputCollection {
+    fn from_json(json: &str) -> Self {
+        serde_json::from_str(json).expect("failed to deserialize build graph json")
+    }
+
+    fn into_hashset(self) -> HashSet<String> {
+        let mut set = HashSet::new();
+        for invocation in self.invocations {
+            for output in invocation.outputs {
+                set.insert(output);
+            }
+        }
+        set
+    }
+}
+
+#[derive(Deserialize)]
+struct Invocation {
+    outputs: Vec<String>,
+}
+
+fn get_output_collection() -> HashSet<String> {
+    let output = std::process::Command::new("cargo")
+        .args(&["build", "--build-plan", "-Z", "unstable-options"])
+        .output()
+        .expect("failed to execute cargo build");
+    let stdout = String::from_utf8(output.stdout).expect("failed to parse stdout");
+    let stderr = String::from_utf8(output.stderr).expect("failed to parse stderr");
+    if !stderr.is_empty() {
+        panic!("unexpected error: {}", stderr)
+    }
+    let collection = OutputCollection::from_json(&stdout);
+    collection.into_hashset()
+}
 
 fn main() {
+    let referenced_files = get_output_collection();
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
@@ -64,15 +106,19 @@ fn main() {
                     .unwrap()
                     .clone();
                 if last_modified > exist_last_modified {
-                    files_to_remove.insert(exist_full_path);
-                    newest_files.insert((crate_name, ext), (last_modified, full_file_path));
-                } else {
-                    files_to_remove.insert(exist_full_path);
+                    newest_files.insert((crate_name, ext.clone()), (last_modified, full_file_path));
+                    if !referenced_files.contains(&exist_full_path) && ext != "d" {
+                        files_to_remove.insert(exist_full_path.clone());
+                    }
+                } else if !referenced_files.contains(&full_file_path) && ext != "d" {
+                    files_to_remove.insert(full_file_path);
                 }
             } else {
                 newest_files.insert((crate_name, ext), (last_modified, full_file_path));
             }
         }
+
+        println!("{files_to_remove:#?}");
 
         // Remove old files
         let mut failed = 0;
