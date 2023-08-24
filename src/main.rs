@@ -1,10 +1,13 @@
-use std::{collections::HashSet, fs};
+use std::{collections::HashSet, fs, path::PathBuf};
 
 use cargo_metadata::MetadataCommand;
 use serde::Deserialize;
 
+type Figureprints = HashSet<(String, String)>;
+
 struct OutputCollection {
-    file_names: HashSet<String>,
+    /// (Names, Fingerprints)
+    deps_figureprints: Figureprints,
 }
 
 impl OutputCollection {
@@ -17,12 +20,31 @@ impl OutputCollection {
         let mut set = HashSet::new();
         for item in result {
             for name in item.filenames.unwrap_or_default() {
-                set.insert(name);
+                let path = PathBuf::from(name);
+                let file_stem = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if file_stem.is_empty() {
+                    continue;
+                }
+                if let Some((name, figureprint)) = extract_figureprint(&file_stem) {
+                    set.insert((name.to_string(), figureprint.to_string()));
+                }
             }
         }
         assert!(!set.is_empty(), "set of valid files should not be empty");
-        Self { file_names: set }
+        Self {
+            deps_figureprints: set,
+        }
     }
+}
+
+fn extract_figureprint(file_stem: &str) -> Option<(String, String)> {
+    file_stem
+        .rsplit_once('-')
+        .map(|(name, figureprint)| (name.to_string(), figureprint.to_string()))
 }
 
 #[derive(Deserialize, Default)]
@@ -30,18 +52,18 @@ struct OutputItem {
     filenames: Option<Vec<String>>,
 }
 
-fn get_output_collection() -> HashSet<String> {
+fn get_figureprints() -> Figureprints {
     let output = std::process::Command::new("cargo")
         .args(["build", "--message-format=json"])
         .output()
         .expect("failed to execute cargo build");
     let stdout = String::from_utf8(output.stdout).expect("failed to parse stdout");
     let collection = OutputCollection::from_json(&stdout);
-    collection.file_names
+    collection.deps_figureprints
 }
 
 fn main() {
-    let referenced_files = get_output_collection();
+    let figureprints = get_figureprints();
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
@@ -69,20 +91,18 @@ fn main() {
                 continue;
             }
 
-            let ext = file
-                .path()
+            let path = file.path();
+            let ext = path
                 .extension()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let full_file_path = file
-                .path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string();
+            let full_file_path = path.canonicalize().unwrap().to_string_lossy().to_string();
+            let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+            let (name, figureprint) = extract_figureprint(&stem)
+                .expect(&format!("invalid file name: {}, files under deps should contains crate name and figureprint", stem));
 
-            if !referenced_files.contains(&full_file_path) && ext != "d" {
+            if !figureprints.contains(&(name, figureprint)) && ext != "d" {
                 files_to_remove.insert(full_file_path.clone());
             }
         }
