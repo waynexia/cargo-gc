@@ -1,8 +1,21 @@
-use clap::{command, Parser};
+use clap::{command, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(author, version, about)]
+#[command(propagate_version = true)]
 pub struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Gc(GcCommand),
+}
+
+#[derive(Parser)]
+#[command(author, version, about)]
+struct GcCommand {
     /// Display the detailed path of removed files.
     #[arg(short, long)]
     verbose: bool,
@@ -28,6 +41,7 @@ pub struct Args {
 
 impl Args {
     pub fn from_cli(cli: Cli) -> Self {
+        let Command::Gc(cli) = cli.command;
         let profile = match (cli.profile, cli.release) {
             (None, true) => "release".into(),
             (None, false) => "debug".into(),
