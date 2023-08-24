@@ -67,7 +67,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-gc"
+name = "cargo-gc-bin"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
