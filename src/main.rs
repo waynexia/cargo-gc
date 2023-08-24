@@ -1,6 +1,10 @@
+mod args;
+
 use std::{collections::HashSet, fs, path::PathBuf};
 
+use args::{Args, Cli};
 use cargo_metadata::MetadataCommand;
+use clap::Parser;
 use serde::Deserialize;
 
 type Figureprints = HashSet<(String, String)>;
@@ -52,9 +56,10 @@ struct OutputItem {
     filenames: Option<Vec<String>>,
 }
 
-fn get_figureprints() -> Figureprints {
+fn get_figureprints(args: &Args) -> Figureprints {
     let output = std::process::Command::new("cargo")
         .args(["build", "--message-format=json"])
+        .args(args.cargo_profile_args())
         .output()
         .expect("failed to execute cargo build");
     let stdout = String::from_utf8(output.stdout).expect("failed to parse stdout");
@@ -63,62 +68,63 @@ fn get_figureprints() -> Figureprints {
 }
 
 fn main() {
-    let figureprints = get_figureprints();
+    let args = Args::from_cli(Cli::parse());
+
+    let figureprints = get_figureprints(&args);
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
         .expect("failed to retrieve cargo metadata");
     let target_path = metadata.target_directory;
-    let targets = fs::read_dir(target_path)
-        .expect("failed to read target directory")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
+    let profile_path = target_path.join(args.profile);
+    let deps_path = profile_path.join("deps");
+    let files_iter = fs::read_dir(deps_path.clone())
+        .expect(&format!("failed to read deps directory: {:?}", deps_path));
 
-    for target in targets {
-        let deps_path = target.join("deps");
-        let files_iter = fs::read_dir(deps_path);
-        if files_iter.is_err() {
+    let mut files_to_remove = HashSet::new();
+    // Find the newest file for each crate
+    for file in files_iter {
+        let file = file.unwrap();
+        if file.file_type().unwrap().is_dir() {
             continue;
         }
-        let mut files_to_remove = HashSet::new();
 
-        // Find the newest file for each crate
-        for file in files_iter.unwrap() {
-            let file = file.unwrap();
-            if file.file_type().unwrap().is_dir() {
-                continue;
-            }
+        let path = file.path();
+        let ext = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let full_file_path = path.canonicalize().unwrap().to_string_lossy().to_string();
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let (name, figureprint) = extract_figureprint(&stem).expect(&format!(
+            "invalid file name: {}, files under deps should contains crate name and figureprint",
+            stem
+        ));
 
-            let path = file.path();
-            let ext = path
-                .extension()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let full_file_path = path.canonicalize().unwrap().to_string_lossy().to_string();
-            let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-            let (name, figureprint) = extract_figureprint(&stem)
-                .expect(&format!("invalid file name: {}, files under deps should contains crate name and figureprint", stem));
-
-            if !figureprints.contains(&(name, figureprint)) && ext != "d" {
-                files_to_remove.insert(full_file_path.clone());
-            }
+        if !figureprints.contains(&(name, figureprint)) && ext != "d" {
+            files_to_remove.insert(full_file_path.clone());
         }
-
-        println!("files to remove {files_to_remove:#?}");
-
-        // Remove old files
-        let mut failed = 0;
-        let total = files_to_remove.len();
-        for file in files_to_remove {
-            if let Err(e) = fs::remove_file(file) {
-                failed += 1;
-                println!("failed to remove file: {}", e);
-            };
-        }
-
-        println!("removed {} files from {}", total - failed, target.display());
     }
+
+    println!("found {} outdated files", files_to_remove.len());
+    if args.verbose {
+        println!("files to remove {files_to_remove:#?}");
+    }
+    if args.dry_run {
+        println!("abort due to dry run");
+        return;
+    }
+
+    // Remove old files
+    let mut failed = 0;
+    let total = files_to_remove.len();
+    for file in files_to_remove {
+        if let Err(e) = fs::remove_file(file) {
+            failed += 1;
+            println!("failed to remove file: {}", e);
+        };
+    }
+
+    println!("removed {} files from {:?}", total - failed, profile_path);
 }
