@@ -11,6 +11,7 @@ Garbage collect outdated cargo build artifacts.
 """
 
 [dependencies]
+anyhow = "1.0.75"
 cargo_metadata = "0.17.0"
 clap = { version = "4.3.24", features = ["derive"] }
 serde = { version = "1.0.185", features = ["derive"] }

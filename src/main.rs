@@ -2,6 +2,7 @@ mod args;
 
 use std::{collections::HashSet, fs, path::PathBuf};
 
+use anyhow::{Context, Result};
 use args::{Args, Cli};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
@@ -15,11 +16,11 @@ struct OutputCollection {
 }
 
 impl OutputCollection {
-    fn from_json(json: &str) -> Self {
+    fn from_json(json: &str) -> Result<Self> {
         let result = json
             .lines()
-            .map(|raw| serde_json::from_str(raw).expect("failed to deserialize build graph json"))
-            .collect::<Vec<OutputItem>>();
+            .map(|raw| serde_json::from_str(raw).context("failed to deserialize build graph json"))
+            .collect::<Result<Vec<OutputItem>>>()?;
 
         let mut set = HashSet::new();
         for item in result {
@@ -38,10 +39,14 @@ impl OutputCollection {
                 }
             }
         }
-        assert!(!set.is_empty(), "set of valid files should not be empty");
-        Self {
-            deps_figureprints: set,
+        if set.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no valid file is found, you can just run `cargo clean`"
+            ));
         }
+        Ok(Self {
+            deps_figureprints: set,
+        })
     }
 }
 
@@ -56,36 +61,40 @@ struct OutputItem {
     filenames: Option<Vec<String>>,
 }
 
-fn get_figureprints(args: &Args) -> Figureprints {
+fn get_figureprints(args: &Args) -> Result<Figureprints> {
     let output = std::process::Command::new("cargo")
         .args(["build", "--message-format=json"])
         .args(args.cargo_profile_args())
         .output()
-        .expect("failed to execute cargo build");
-    let stdout = String::from_utf8(output.stdout).expect("failed to parse stdout");
-    let collection = OutputCollection::from_json(&stdout);
-    collection.deps_figureprints
+        .context("failed to execute cargo build")?;
+    let stdout = String::from_utf8(output.stdout).context("failed to parse stdout")?;
+    let collection = OutputCollection::from_json(&stdout)?;
+    Ok(collection.deps_figureprints)
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
 
-    let figureprints = get_figureprints(&args);
+    let figureprints = get_figureprints(&args)?;
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
-        .expect("failed to retrieve cargo metadata");
+        .context("failed to retrieve cargo metadata")?;
     let target_path = metadata.target_directory;
     let profile_path = target_path.join(args.profile);
     let deps_path = profile_path.join("deps");
     let files_iter = fs::read_dir(deps_path.clone())
-        .expect(&format!("failed to read deps directory: {:?}", deps_path));
+        .with_context(|| format!("failed to read deps directory: {:?}", deps_path))?;
 
     let mut files_to_remove = HashSet::new();
     // Find the newest file for each crate
     for file in files_iter {
-        let file = file.unwrap();
-        if file.file_type().unwrap().is_dir() {
+        let file = file.with_context(|| format!("failed to read file in {:?}", deps_path))?;
+        if file
+            .file_type()
+            .context("failed to get fs entry type")?
+            .is_dir()
+        {
             continue;
         }
 
@@ -95,12 +104,22 @@ fn main() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let full_file_path = path.canonicalize().unwrap().to_string_lossy().to_string();
-        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-        let (name, figureprint) = extract_figureprint(&stem).expect(&format!(
+        let full_file_path = path
+            .canonicalize()
+            .with_context(|| format!("cannot canonicalize path {path:?}"))?
+            .to_string_lossy()
+            .to_string();
+        let stem = path
+            .file_stem()
+            .with_context(|| format!("cannot get file stem of {path:?}"))?
+            .to_string_lossy()
+            .to_string();
+        let (name, figureprint) = extract_figureprint(&stem).with_context(|| {
+            format!(
             "invalid file name: {}, files under deps should contains crate name and figureprint",
             stem
-        ));
+        )
+        })?;
 
         if !figureprints.contains(&(name, figureprint)) && ext != "d" {
             files_to_remove.insert(full_file_path.clone());
@@ -113,7 +132,7 @@ fn main() {
     }
     if args.dry_run {
         println!("abort due to dry run");
-        return;
+        return Ok(());
     }
 
     // Remove old files
@@ -127,4 +146,5 @@ fn main() {
     }
 
     println!("removed {} files from {:?}", total - failed, profile_path);
+    Ok(())
 }
