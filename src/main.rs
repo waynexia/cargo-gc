@@ -1,11 +1,12 @@
 mod args;
 
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use args::{Args, Cli};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
+use indicatif::ProgressBar;
 use serde::Deserialize;
 
 type Figureprints = HashSet<(String, String)>;
@@ -62,11 +63,15 @@ struct OutputItem {
 }
 
 fn get_figureprints(args: &Args) -> Result<Figureprints> {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_message("running cargo build to gather message...");
+    spinner.enable_steady_tick(Duration::from_millis(100));
     let output = std::process::Command::new("cargo")
         .args(["build", "--message-format=json"])
         .args(args.cargo_profile_args())
         .output()
         .context("failed to execute cargo build")?;
+    spinner.finish_and_clear();
     let stdout = String::from_utf8(output.stdout).context("failed to parse stdout")?;
     let collection = OutputCollection::from_json(&stdout)?;
     Ok(collection.deps_figureprints)
