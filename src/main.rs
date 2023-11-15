@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use args::{Args, Cli};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
+use humansize::DECIMAL;
 use indicatif::ProgressBar;
 use serde::Deserialize;
 
@@ -142,14 +143,29 @@ fn main() -> Result<()> {
 
     // Remove old files
     let mut failed = 0;
-    let total = files_to_remove.len();
+    let total_count = files_to_remove.len();
+    let mut success_size = 0;
     for file in files_to_remove {
+        let size = fs::metadata(&file).map(|m| m.len()).unwrap_or_default();
+        success_size += size;
         if let Err(e) = fs::remove_file(file) {
             failed += 1;
+            success_size -= size;
             println!("failed to remove file: {}", e);
         };
     }
 
-    println!("removed {} files from {:?}", total - failed, profile_path);
+    let fail_report = if failed == 0 {
+        "".to_string()
+    } else {
+        format!(", {} files failed to remove", failed)
+    };
+    println!(
+        "Removed {} files from {:?}, {} total{}",
+        total_count - failed,
+        profile_path,
+        humansize::format_size(success_size, DECIMAL),
+        fail_report,
+    );
     Ok(())
 }
