@@ -70,9 +70,17 @@ fn get_figureprints(args: &Args) -> Result<Figureprints> {
     let output = std::process::Command::new("cargo")
         .args(["build", "--message-format=json"])
         .args(args.cargo_profile_args())
+        .args(&args.cargo_args)
         .output()
         .context("failed to execute cargo build")?;
     spinner.finish_and_clear();
+
+    // check cargo build result
+    if !output.status.success() {
+        let stderr = String::from_utf8(output.stderr).context("failed to parse stderr")?;
+        return Err(anyhow::anyhow!("cargo build failed: {}", stderr));
+    }
+
     let stdout = String::from_utf8(output.stdout).context("failed to parse stdout")?;
     let collection = OutputCollection::from_json(&stdout)?;
     Ok(collection.deps_figureprints)

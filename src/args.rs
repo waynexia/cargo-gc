@@ -31,12 +31,17 @@ struct GcCommand {
     /// GC artifacts with the specified profile
     #[arg(long)]
     profile: Option<String>,
+
+    /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments
+    #[arg(trailing_var_arg = true)]
+    cargo_args: Vec<String>,
 }
 
 pub struct Args {
     pub profile: String,
     pub verbose: bool,
     pub dry_run: bool,
+    pub cargo_args: Vec<String>,
 }
 
 impl Args {
@@ -56,6 +61,7 @@ impl Args {
             profile,
             verbose,
             dry_run,
+            cargo_args: cli.cargo_args,
         }
     }
 
