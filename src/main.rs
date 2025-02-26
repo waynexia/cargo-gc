@@ -67,7 +67,9 @@ fn get_figureprints(args: &Args) -> Result<Figureprints> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_message("running cargo build to gather message...");
     spinner.enable_steady_tick(Duration::from_millis(100));
-    let output = std::process::Command::new("cargo")
+
+    let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = std::process::Command::new(cargo_bin)
         .args(["build", "--message-format=json"])
         .args(args.cargo_profile_args())
         .args(&args.cargo_args)
