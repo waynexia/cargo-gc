@@ -32,7 +32,7 @@ struct GcCommand {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments
+    /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments.
     #[arg(trailing_var_arg = true)]
     cargo_args: Vec<String>,
 }
