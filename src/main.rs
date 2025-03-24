@@ -130,12 +130,11 @@ fn main() -> Result<()> {
             .with_context(|| format!("cannot get file stem of {path:?}"))?
             .to_string_lossy()
             .to_string();
-        let (name, figureprint) = extract_figureprint(&stem).with_context(|| {
-            format!(
-            "invalid file name: {}, files under deps should contains crate name and figureprint",
-            stem
-        )
-        })?;
+        let Some((name, figureprint)) = extract_figureprint(&stem) else {
+            // Skip files that are not in the format of `name-figureprint`.
+            // They are `.d` files for output targets.
+            continue;
+        };
 
         if !figureprints.contains(&(name, figureprint)) && ext != "d" {
             files_to_remove.insert(full_file_path.clone());
