@@ -1,10 +1,15 @@
 mod args;
 
-use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{Context, Result};
 use args::{Args, Cli};
-use cargo_metadata::MetadataCommand;
+use cargo_metadata::{camino::Utf8PathBuf, MetadataCommand};
 use clap::Parser;
 use humansize::DECIMAL;
 use indicatif::ProgressBar;
@@ -88,6 +93,75 @@ fn get_figureprints(args: &Args) -> Result<Figureprints> {
     Ok(collection.deps_figureprints)
 }
 
+/// `path` is like `target/debug`
+fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
+    let incremental_path = path.join("incremental");
+    if !incremental_path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let mut pathbuf_to_remove = HashSet::new();
+    let mut latest_one: HashMap<String, (String, SystemTime)> = HashMap::new();
+
+    // walk the first level of the incremental directory
+    let dir_iter = fs::read_dir(incremental_path.clone()).with_context(|| {
+        format!(
+            "failed to read incremental directory: {:?}",
+            incremental_path
+        )
+    })?;
+    for dir in dir_iter {
+        let dir = dir.with_context(|| format!("failed to read dir in {:?}", incremental_path))?;
+        // only handle dir
+        if !dir
+            .file_type()
+            .map(|open_dir| open_dir.is_dir())
+            .unwrap_or_default()
+        {
+            continue;
+        }
+        let Some((dep_name, hash)) =
+            extract_figureprint(dir.file_name().to_string_lossy().as_ref())
+        else {
+            continue;
+        };
+        // get the last modified time of the dir
+        let last_modified = dir
+            .metadata()
+            .with_context(|| format!("failed to get metadata of {:?}", dir.path()))?
+            .modified()
+            .with_context(|| format!("failed to get modified time of {:?}", dir.path()))?;
+        // update the latest one
+        match latest_one.entry(dep_name.clone()) {
+            Entry::Occupied(mut entry) => {
+                let (prev_hash, prev_last_modified) = entry.get_mut();
+                if last_modified > *prev_last_modified {
+                    *prev_hash = hash;
+                    *prev_last_modified = last_modified;
+                    pathbuf_to_remove
+                        .insert(incremental_path.join(format!("{dep_name}-{prev_hash}")));
+                } else {
+                    pathbuf_to_remove.insert(incremental_path.join(format!("{dep_name}-{hash}")));
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((hash, last_modified));
+            }
+        }
+    }
+
+    let to_remove = pathbuf_to_remove
+        .into_iter()
+        .map(|p| {
+            Ok(p.canonicalize_utf8()
+                .with_context(|| format!("cannot canonicalize path {p:?}"))?
+                .to_string())
+        })
+        .collect::<Result<HashSet<_>>>()?;
+
+    Ok(to_remove)
+}
+
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
 
@@ -141,9 +215,17 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("found {} outdated files", files_to_remove.len());
+    println!("found {} outdated dep files", files_to_remove.len());
+
+    let incremental_files_to_remove = incremental_files(&profile_path)?;
+    println!(
+        "found {} incremental files",
+        incremental_files_to_remove.len()
+    );
+
     if args.verbose {
         println!("files to remove {files_to_remove:#?}");
+        println!("incremental files to remove {incremental_files_to_remove:#?}");
     }
     if args.dry_run {
         println!("abort due to dry run");
@@ -161,6 +243,24 @@ fn main() -> Result<()> {
             failed += 1;
             success_size -= size;
             println!("failed to remove file: {}", e);
+        };
+    }
+    for dir in incremental_files_to_remove {
+        let dir_iter = fs::read_dir(dir.clone())
+            .with_context(|| format!("failed to read incremental directory: {:?}", dir))?;
+        let size: u64 = dir_iter
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let metadata = entry.metadata().ok()?;
+                let size = metadata.len();
+                Some(size)
+            })
+            .sum();
+        success_size += size;
+        if let Err(e) = fs::remove_dir_all(dir) {
+            failed += 1;
+            success_size -= size;
+            println!("failed to remove dir: {}", e);
         };
     }
 
