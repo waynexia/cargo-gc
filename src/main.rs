@@ -1,7 +1,7 @@
 mod args;
 
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fs,
     path::PathBuf,
     time::{Duration, SystemTime},
@@ -9,17 +9,17 @@ use std::{
 
 use anyhow::{Context, Result};
 use args::{Args, Cli};
-use cargo_metadata::{camino::Utf8PathBuf, MetadataCommand};
+use cargo_metadata::{MetadataCommand, camino::Utf8PathBuf};
 use clap::Parser;
 use humansize::DECIMAL;
 use indicatif::ProgressBar;
 use serde::Deserialize;
 
-type Figureprints = HashSet<(String, String)>;
+type Fingerprints = HashSet<(String, String)>;
 
 struct OutputCollection {
     /// (Names, Fingerprints)
-    deps_figureprints: Figureprints,
+    deps_fingerprints: Fingerprints,
 }
 
 impl OutputCollection {
@@ -41,8 +41,8 @@ impl OutputCollection {
                 if file_stem.is_empty() {
                     continue;
                 }
-                if let Some((name, figureprint)) = extract_figureprint(&file_stem) {
-                    set.insert((name.to_string(), figureprint.to_string()));
+                if let Some((name, fingerprint)) = extract_fingerprint(&file_stem) {
+                    set.insert((name.to_string(), fingerprint.to_string()));
                 }
             }
         }
@@ -52,15 +52,15 @@ impl OutputCollection {
             ));
         }
         Ok(Self {
-            deps_figureprints: set,
+            deps_fingerprints: set,
         })
     }
 }
 
-fn extract_figureprint(file_stem: &str) -> Option<(String, String)> {
+fn extract_fingerprint(file_stem: &str) -> Option<(String, String)> {
     file_stem
         .rsplit_once('-')
-        .map(|(name, figureprint)| (name.to_string(), figureprint.to_string()))
+        .map(|(name, fingerprint)| (name.to_string(), fingerprint.to_string()))
 }
 
 #[derive(Deserialize, Default)]
@@ -68,7 +68,7 @@ struct OutputItem {
     filenames: Option<Vec<String>>,
 }
 
-fn get_figureprints(args: &Args) -> Result<Figureprints> {
+fn get_fingerprints(args: &Args) -> Result<Fingerprints> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_message("running cargo build to gather message...");
     spinner.enable_steady_tick(Duration::from_millis(100));
@@ -90,7 +90,7 @@ fn get_figureprints(args: &Args) -> Result<Figureprints> {
 
     let stdout = String::from_utf8(output.stdout).context("failed to parse stdout")?;
     let collection = OutputCollection::from_json(&stdout)?;
-    Ok(collection.deps_figureprints)
+    Ok(collection.deps_fingerprints)
 }
 
 /// `path` is like `target/debug`
@@ -104,11 +104,8 @@ fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
     let mut latest_one: HashMap<String, (String, SystemTime)> = HashMap::new();
 
     // walk the first level of the incremental directory
-    let dir_iter = fs::read_dir(incremental_path.clone()).with_context(|| {
-        format!(
-            "failed to read incremental directory: {incremental_path:?}"
-        )
-    })?;
+    let dir_iter = fs::read_dir(incremental_path.clone())
+        .with_context(|| format!("failed to read incremental directory: {incremental_path:?}"))?;
     for dir in dir_iter {
         let dir = dir.with_context(|| format!("failed to read dir in {incremental_path:?}"))?;
         // only handle dir
@@ -120,7 +117,7 @@ fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
             continue;
         }
         let Some((dep_name, hash)) =
-            extract_figureprint(dir.file_name().to_string_lossy().as_ref())
+            extract_fingerprint(dir.file_name().to_string_lossy().as_ref())
         else {
             continue;
         };
@@ -164,7 +161,7 @@ fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
 
-    let figureprints = get_figureprints(&args)?;
+    let fingerprints = get_fingerprints(&args)?;
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
@@ -203,13 +200,13 @@ fn main() -> Result<()> {
             .with_context(|| format!("cannot get file stem of {path:?}"))?
             .to_string_lossy()
             .to_string();
-        let Some((name, figureprint)) = extract_figureprint(&stem) else {
-            // Skip files that are not in the format of `name-figureprint`.
+        let Some((name, fingerprint)) = extract_fingerprint(&stem) else {
+            // Skip files that are not in the format of `name-fingerprint`.
             // They are `.d` files for output targets.
             continue;
         };
 
-        if !figureprints.contains(&(name, figureprint)) && ext != "d" {
+        if !fingerprints.contains(&(name, fingerprint)) && ext != "d" {
             files_to_remove.insert(full_file_path.clone());
         }
     }

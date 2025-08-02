@@ -11,7 +11,8 @@ Garbage collect outdated cargo build artifacts.
 """
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0.98"
+cargo = { git = "https://github.com/waynexia/cargo.git", rev = "f47913100d61ec3b038e3deb6544fb3e48d92e2c" }
 cargo_metadata = "0.17.0"
 clap = { version = "4.3.24", features = ["derive"] }
 humansize = "2.1.3"
