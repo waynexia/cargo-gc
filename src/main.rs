@@ -106,12 +106,11 @@ fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
     // walk the first level of the incremental directory
     let dir_iter = fs::read_dir(incremental_path.clone()).with_context(|| {
         format!(
-            "failed to read incremental directory: {:?}",
-            incremental_path
+            "failed to read incremental directory: {incremental_path:?}"
         )
     })?;
     for dir in dir_iter {
-        let dir = dir.with_context(|| format!("failed to read dir in {:?}", incremental_path))?;
+        let dir = dir.with_context(|| format!("failed to read dir in {incremental_path:?}"))?;
         // only handle dir
         if !dir
             .file_type()
@@ -174,12 +173,12 @@ fn main() -> Result<()> {
     let profile_path = target_path.join(args.profile);
     let deps_path = profile_path.join("deps");
     let files_iter = fs::read_dir(deps_path.clone())
-        .with_context(|| format!("failed to read deps directory: {:?}", deps_path))?;
+        .with_context(|| format!("failed to read deps directory: {deps_path:?}"))?;
 
     let mut files_to_remove = HashSet::new();
     // Find the newest file for each crate
     for file in files_iter {
-        let file = file.with_context(|| format!("failed to read file in {:?}", deps_path))?;
+        let file = file.with_context(|| format!("failed to read file in {deps_path:?}"))?;
         if file
             .file_type()
             .context("failed to get fs entry type")?
@@ -242,12 +241,12 @@ fn main() -> Result<()> {
         if let Err(e) = fs::remove_file(file) {
             failed += 1;
             success_size -= size;
-            println!("failed to remove file: {}", e);
+            println!("failed to remove file: {e}");
         };
     }
     for dir in incremental_files_to_remove {
         let dir_iter = fs::read_dir(dir.clone())
-            .with_context(|| format!("failed to read incremental directory: {:?}", dir))?;
+            .with_context(|| format!("failed to read incremental directory: {dir:?}"))?;
         let size: u64 = dir_iter
             .filter_map(|entry| {
                 let entry = entry.ok()?;
@@ -260,14 +259,14 @@ fn main() -> Result<()> {
         if let Err(e) = fs::remove_dir_all(dir) {
             failed += 1;
             success_size -= size;
-            println!("failed to remove dir: {}", e);
+            println!("failed to remove dir: {e}");
         };
     }
 
     let fail_report = if failed == 0 {
         "".to_string()
     } else {
-        format!(", {} files failed to remove", failed)
+        format!(", {failed} files failed to remove")
     };
     println!(
         "Removed {} files from {:?}, {} total{}",

@@ -1,7 +1,7 @@
 [package]
 name = "cargo-gc-bin"
 version = "0.1.7"
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 authors = ["Wayne Xia <waynestxia@gmail.com>"]
 readme = "README.md"
