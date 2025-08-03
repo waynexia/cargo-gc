@@ -20,17 +20,17 @@ struct ParsedCargoArgs {
 #[derive(Debug, Clone)]
 pub struct StaticScanConfig {
     /// Features to enable/disable
-    features: CliFeatures,
+    pub features: CliFeatures,
     /// Target platforms to compile for (e.g., host, x86_64-unknown-linux-gnu)
-    requested_kinds: Vec<CompileKind>,
+    pub requested_kinds: Vec<CompileKind>,
     /// Compilation mode (debug, release, test, etc.)
-    mode: CompileMode,
+    pub mode: CompileMode,
     /// Whether to include dev dependencies
-    has_dev_units: HasDevUnits,
+    pub has_dev_units: HasDevUnits,
     /// Force all targets to be considered
-    force_all_targets: ForceAllTargets,
+    pub force_all_targets: ForceAllTargets,
     /// Optional custom profile settings
-    profile_name: String,
+    pub profile_name: String,
 
     /// Working directory for current command run
     work_dir: PathBuf,
@@ -144,7 +144,7 @@ impl StaticScanConfig {
         let mode = match effective_profile.as_str() {
             "test" => CompileMode::Test,
             "bench" => CompileMode::Test,
-            "dev" | "debug" => CompileMode::Build,
+            "dev" => CompileMode::Build,
             "release" => CompileMode::Build,
             _ => CompileMode::Build,
         };
@@ -170,6 +170,10 @@ impl StaticScanConfig {
             work_dir,
         }
     }
+
+    pub fn get_manifest_path(&self) -> PathBuf {
+        self.work_dir.join("Cargo.toml")
+    }
 }
 
 #[cfg(test)]
@@ -192,10 +196,10 @@ mod tests {
     fn test_static_scan_config_from_args() {
         let test_cases = vec![
             TestCase {
-                name: "debug profile with no args",
-                profile: "debug",
+                name: "dev profile with no args",
+                profile: "dev",
                 cargo_args: vec![],
-                expected_profile: "debug",
+                expected_profile: "dev",
                 expected_mode: CompileMode::Build,
                 expected_has_dev_units: HasDevUnits::No,
                 expected_all_features: false,
@@ -223,7 +227,7 @@ mod tests {
             },
             TestCase {
                 name: "profile override with --profile flag",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--profile", "release"],
                 expected_profile: "release",
                 expected_mode: CompileMode::Build,
@@ -233,7 +237,7 @@ mod tests {
             },
             TestCase {
                 name: "profile override with --profile=value syntax",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--profile=custom"],
                 expected_profile: "custom",
                 expected_mode: CompileMode::Build,
@@ -243,9 +247,9 @@ mod tests {
             },
             TestCase {
                 name: "features with --features flag",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--features", "feature1,feature2"],
-                expected_profile: "debug",
+                expected_profile: "dev",
                 expected_mode: CompileMode::Build,
                 expected_has_dev_units: HasDevUnits::No,
                 expected_all_features: false,
@@ -253,9 +257,9 @@ mod tests {
             },
             TestCase {
                 name: "all features enabled",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--all-features"],
-                expected_profile: "debug",
+                expected_profile: "dev",
                 expected_mode: CompileMode::Build,
                 expected_has_dev_units: HasDevUnits::No,
                 expected_all_features: true,
@@ -263,9 +267,9 @@ mod tests {
             },
             TestCase {
                 name: "no default features",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--no-default-features"],
-                expected_profile: "debug",
+                expected_profile: "dev",
                 expected_mode: CompileMode::Build,
                 expected_has_dev_units: HasDevUnits::No,
                 expected_all_features: false,
@@ -283,9 +287,9 @@ mod tests {
             },
             TestCase {
                 name: "with target specification",
-                profile: "debug",
+                profile: "dev",
                 cargo_args: vec!["--target", "x86_64-unknown-linux-gnu"],
-                expected_profile: "debug",
+                expected_profile: "dev",
                 expected_mode: CompileMode::Build,
                 expected_has_dev_units: HasDevUnits::No,
                 expected_all_features: false,

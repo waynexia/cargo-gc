@@ -1,5 +1,6 @@
 mod args;
 mod config;
+mod scan;
 
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
@@ -16,7 +17,7 @@ use humansize::DECIMAL;
 use indicatif::ProgressBar;
 use serde::Deserialize;
 
-use crate::config::StaticScanConfig;
+use crate::{config::StaticScanConfig, scan::Scanner};
 
 type Fingerprints = HashSet<(String, String)>;
 
@@ -163,7 +164,11 @@ fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
 
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
-    let _scan_config = StaticScanConfig::from_args(&args);
+    let scan_config = StaticScanConfig::from_args(&args);
+    let scanner = Scanner::try_new(scan_config).context("failed to create scanner")?;
+    scanner.scan().context("failed to scan the project")?;
+
+    return Ok(());
 
     let fingerprints = get_fingerprints(&args)?;
     let metadata = MetadataCommand::new()

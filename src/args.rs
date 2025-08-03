@@ -49,7 +49,7 @@ impl Args {
         let Command::Gc(cli) = cli.command;
         let profile = match (cli.profile, cli.release) {
             (None, true) => "release".into(),
-            (None, false) => "debug".into(),
+            (None, false) => "dev".into(),
             (Some(_), true) => panic!("conflicting usage of --profile and --release"),
             (Some(profile), false) => profile,
         };
