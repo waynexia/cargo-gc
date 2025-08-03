@@ -1,19 +1,15 @@
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
+use std::sync::Arc;
 
-use cargo::{
-    CargoResult, GlobalContext,
-    core::{
-        Workspace,
-        compiler::{
-            self, BuildConfig, BuildRunner, MessageFormat, RustcTargetData, Unit, UnitInterner,
-            UserIntent,
-            fingerprint::{Fingerprint, calculate, compare_old_fingerprint},
-        },
-        profiles::Profiles,
-    },
-    ops::{CompileFilter, CompileOptions, Packages, create_bcx, resolve_ws_with_opts},
-    util::interning::InternedString,
+use cargo::core::Workspace;
+use cargo::core::compiler::fingerprint::{Fingerprint, calculate, compare_old_fingerprint};
+use cargo::core::compiler::{
+    self, BuildConfig, BuildRunner, MessageFormat, RustcTargetData, Unit, UnitInterner, UserIntent,
 };
+use cargo::core::profiles::Profiles;
+use cargo::ops::{CompileFilter, CompileOptions, Packages, create_bcx, resolve_ws_with_opts};
+use cargo::util::interning::InternedString;
+use cargo::{CargoResult, GlobalContext};
 
 use crate::config::StaticScanConfig;
 

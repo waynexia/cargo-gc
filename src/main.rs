@@ -3,7 +3,10 @@ mod beatrice;
 mod config;
 mod scan;
 
-use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use args::{Args, Cli};
@@ -13,7 +16,9 @@ use humansize::DECIMAL;
 use indicatif::ProgressBar;
 use serde::Deserialize;
 
-use crate::{beatrice::Beatrice, config::StaticScanConfig, scan::Scanner};
+use crate::beatrice::Beatrice;
+use crate::config::StaticScanConfig;
+use crate::scan::Scanner;
 
 type Fingerprints = HashSet<(String, String)>;
 

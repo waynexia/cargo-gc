@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
-use cargo::core::{
-    compiler::{CompileKind, CompileMode},
-    resolver::{CliFeatures, ForceAllTargets, HasDevUnits},
-};
+use cargo::core::compiler::{CompileKind, CompileMode};
+use cargo::core::resolver::{CliFeatures, ForceAllTargets, HasDevUnits};
 
 use crate::args::Args;
 

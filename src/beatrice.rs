@@ -1,12 +1,11 @@
-use cargo_metadata::camino::Utf8PathBuf;
-use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
-    fs,
-    time::SystemTime,
-};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use cargo::core::compiler::Metadata;
+use cargo_metadata::camino::Utf8PathBuf;
 use cargo_metadata::semver::Version;
 
 use crate::extract_fingerprint;
