@@ -1,23 +1,19 @@
 mod args;
+mod beatrice;
 mod config;
 mod scan;
 
-use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use args::{Args, Cli};
-use cargo_metadata::{MetadataCommand, camino::Utf8PathBuf};
+use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use humansize::DECIMAL;
 use indicatif::ProgressBar;
 use serde::Deserialize;
 
-use crate::{config::StaticScanConfig, scan::Scanner};
+use crate::{beatrice::Beatrice, config::StaticScanConfig, scan::Scanner};
 
 type Fingerprints = HashSet<(String, String)>;
 
@@ -97,78 +93,12 @@ fn get_fingerprints(args: &Args) -> Result<Fingerprints> {
     Ok(collection.deps_fingerprints)
 }
 
-/// `path` is like `target/debug`
-fn incremental_files(path: &Utf8PathBuf) -> Result<HashSet<String>> {
-    let incremental_path = path.join("incremental");
-    if !incremental_path.exists() {
-        return Ok(HashSet::new());
-    }
-
-    let mut pathbuf_to_remove = HashSet::new();
-    let mut latest_one: HashMap<String, (String, SystemTime)> = HashMap::new();
-
-    // walk the first level of the incremental directory
-    let dir_iter = fs::read_dir(incremental_path.clone())
-        .with_context(|| format!("failed to read incremental directory: {incremental_path:?}"))?;
-    for dir in dir_iter {
-        let dir = dir.with_context(|| format!("failed to read dir in {incremental_path:?}"))?;
-        // only handle dir
-        if !dir
-            .file_type()
-            .map(|open_dir| open_dir.is_dir())
-            .unwrap_or_default()
-        {
-            continue;
-        }
-        let Some((dep_name, hash)) =
-            extract_fingerprint(dir.file_name().to_string_lossy().as_ref())
-        else {
-            continue;
-        };
-        // get the last modified time of the dir
-        let last_modified = dir
-            .metadata()
-            .with_context(|| format!("failed to get metadata of {:?}", dir.path()))?
-            .modified()
-            .with_context(|| format!("failed to get modified time of {:?}", dir.path()))?;
-        // update the latest one
-        match latest_one.entry(dep_name.clone()) {
-            Entry::Occupied(mut entry) => {
-                let (prev_hash, prev_last_modified) = entry.get_mut();
-                if last_modified > *prev_last_modified {
-                    *prev_hash = hash;
-                    *prev_last_modified = last_modified;
-                    pathbuf_to_remove
-                        .insert(incremental_path.join(format!("{dep_name}-{prev_hash}")));
-                } else {
-                    pathbuf_to_remove.insert(incremental_path.join(format!("{dep_name}-{hash}")));
-                }
-            }
-            Entry::Vacant(entry) => {
-                entry.insert((hash, last_modified));
-            }
-        }
-    }
-
-    let to_remove = pathbuf_to_remove
-        .into_iter()
-        .map(|p| {
-            Ok(p.canonicalize_utf8()
-                .with_context(|| format!("cannot canonicalize path {p:?}"))?
-                .to_string())
-        })
-        .collect::<Result<HashSet<_>>>()?;
-
-    Ok(to_remove)
-}
-
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
+
     let scan_config = StaticScanConfig::from_args(&args);
     let scanner = Scanner::try_new(scan_config).context("failed to create scanner")?;
-    scanner.scan().context("failed to scan the project")?;
-
-    return Ok(());
+    scanner.scan(false).context("failed to scan the project")?;
 
     let fingerprints = get_fingerprints(&args)?;
     let metadata = MetadataCommand::new()
@@ -222,7 +152,11 @@ fn main() -> Result<()> {
 
     println!("found {} outdated dep files", files_to_remove.len());
 
-    let incremental_files_to_remove = incremental_files(&profile_path)?;
+    let mut betty = Beatrice::open(profile_path.clone());
+    // let incremental_files_to_remove = incremental_files(&profile_path)?;
+    let incremental_files_to_remove = betty
+        .load_incremental()
+        .context("failed to calculate incremental files")?;
     println!(
         "found {} incremental files",
         incremental_files_to_remove.len()

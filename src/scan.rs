@@ -11,9 +11,7 @@ use cargo::{
         },
         profiles::Profiles,
     },
-    ops::{
-        CompileFilter, CompileOptions, Packages,  create_bcx, resolve_ws_with_opts,
-    },
+    ops::{CompileFilter, CompileOptions, Packages, create_bcx, resolve_ws_with_opts},
     util::interning::InternedString,
 };
 
@@ -32,7 +30,7 @@ impl Scanner {
         })
     }
 
-    pub fn scan(&self) -> CargoResult<()> {
+    pub fn scan(&self, show_result: bool) -> CargoResult<()> {
         // todo: get the manifest path using cargo utils
         let manifest_path = self.config.get_manifest_path();
 
@@ -115,21 +113,25 @@ impl Scanner {
             let freshness = self.check_unit_freshness(&mut build_runner, unit, &fingerprint)?;
 
             if freshness.is_fresh {
-                println!(
-                    "✅ Unit {} is fresh, fingerprint hash: {}, path: {}",
-                    unit.pkg.package_id(),
-                    freshness.current_fingerprint_hash,
-                    freshness.fingerprint_path
-                );
+                if show_result {
+                    println!(
+                        "✅ Unit {} is fresh, fingerprint hash: {}, path: {}",
+                        unit.pkg.package_id(),
+                        freshness.current_fingerprint_hash,
+                        freshness.fingerprint_path
+                    );
+                }
                 fresh_count += 1;
             } else {
-                println!(
-                    "❌ Unit {} is dirty: {:?}, fingerprint hash: {}, path: {}",
-                    unit.pkg.package_id(),
-                    freshness.dirty_reason,
-                    freshness.current_fingerprint_hash,
-                    freshness.fingerprint_path
-                );
+                if show_result {
+                    println!(
+                        "❌ Unit {} is dirty: {:?}, fingerprint hash: {}, path: {}",
+                        unit.pkg.package_id(),
+                        freshness.dirty_reason,
+                        freshness.current_fingerprint_hash,
+                        freshness.fingerprint_path
+                    );
+                }
                 dirty_count += 1;
             }
         }
@@ -160,7 +162,7 @@ impl Scanner {
         let dirty_reason = compare_old_fingerprint(
             unit,
             &fingerprint_file_path,
-            &*fingerprint,
+            fingerprint,
             mtime_on_use,
             false, // force_rebuild
         );
@@ -182,6 +184,7 @@ impl Scanner {
 }
 
 struct DependencyFreshness {
+    #[allow(dead_code)]
     unit: Unit,
     is_fresh: bool,
     dirty_reason: Option<String>,
