@@ -11,8 +11,8 @@ use cargo::ops::{CompileFilter, CompileOptions, Packages, create_bcx, resolve_ws
 use cargo::util::interning::InternedString;
 use cargo::{CargoResult, GlobalContext};
 
-use crate::config::StaticScanConfig;
 use crate::beatrice::{Beatrice, UnitFreshness};
+use crate::config::StaticScanConfig;
 
 pub struct Scanner {
     config: StaticScanConfig,
@@ -115,7 +115,12 @@ impl Scanner {
             let unit_freshness = if freshness.is_fresh {
                 UnitFreshness::Fresh
             } else {
-                UnitFreshness::Dirty(freshness.dirty_reason.clone().unwrap_or_else(|| "Unknown reason".to_string()))
+                UnitFreshness::Dirty(
+                    freshness
+                        .dirty_reason
+                        .clone()
+                        .unwrap_or_else(|| "Unknown reason".to_string()),
+                )
             };
             betty.update_fingerprint_freshness(&package_name, fingerprint_hash, unit_freshness);
 

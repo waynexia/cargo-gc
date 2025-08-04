@@ -20,6 +20,7 @@ use serde::Deserialize;
 use crate::beatrice::Beatrice;
 use crate::config::StaticScanConfig;
 use crate::scan::Scanner;
+use crate::utils::profile_to_dir;
 
 type Fingerprints = HashSet<(String, String)>;
 
@@ -111,7 +112,7 @@ fn main() -> Result<()> {
         .exec()
         .context("failed to retrieve cargo metadata")?;
     let target_path = metadata.target_directory;
-    let profile_path = target_path.join(args.profile);
+    let profile_path = target_path.join(profile_to_dir(&args.profile));
 
     // Create Beatrice instance early so we can use it with Scanner
     let mut betty = Beatrice::open(profile_path.clone());

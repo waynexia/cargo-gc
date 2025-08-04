@@ -259,8 +259,9 @@ impl Beatrice {
         let normalized_name = normalize_package_name(name);
 
         if let Some(hash_map) = self.fingerprint_library.get_mut(&normalized_name)
-            && let Some(fingerprint_info) = hash_map.get_mut(hash) {
-                fingerprint_info.freshness = freshness;
+            && let Some(fingerprint_info) = hash_map.get_mut(hash)
+        {
+            fingerprint_info.freshness = freshness;
         }
     }
 
@@ -268,7 +269,7 @@ impl Beatrice {
     /// Works with normalized (underscore) package names
     pub fn get_fingerprint_freshness(&self, name: &str, hash: &str) -> Option<&UnitFreshness> {
         let normalized_name = normalize_package_name(name);
-        
+
         self.fingerprint_library
             .get(&normalized_name)
             .and_then(|hash_map| hash_map.get(hash))
@@ -286,7 +287,7 @@ impl Beatrice {
     /// Works with normalized (underscore) package names
     pub fn get_deps_info(&self, name: &str, hash: &str) -> Option<&ItemInfo> {
         let normalized_name = normalize_package_name(name);
-        
+
         self.deps_library
             .get(&normalized_name)
             .and_then(|hash_map| hash_map.get(hash))
@@ -297,7 +298,7 @@ impl Beatrice {
         let mut fresh_count = 0;
         let mut dirty_count = 0;
         let mut unknown_count = 0;
-        
+
         let mut fresh_with_deps = 0;
         let mut dirty_with_deps = 0;
         let mut unknown_with_deps = 0;
@@ -311,7 +312,12 @@ impl Beatrice {
                 match &fingerprint_info.freshness {
                     UnitFreshness::Fresh => {
                         fresh_count += 1;
-                        if self.deps_library.get(package_name).and_then(|deps| deps.get(hash)).is_some() {
+                        if self
+                            .deps_library
+                            .get(package_name)
+                            .and_then(|deps| deps.get(hash))
+                            .is_some()
+                        {
                             fresh_with_deps += 1;
                         } else {
                             fresh_without_deps += 1;
@@ -319,7 +325,12 @@ impl Beatrice {
                     }
                     UnitFreshness::Dirty(_) => {
                         dirty_count += 1;
-                        if self.deps_library.get(package_name).and_then(|deps| deps.get(hash)).is_some() {
+                        if self
+                            .deps_library
+                            .get(package_name)
+                            .and_then(|deps| deps.get(hash))
+                            .is_some()
+                        {
                             dirty_with_deps += 1;
                         } else {
                             dirty_without_deps += 1;
@@ -327,7 +338,12 @@ impl Beatrice {
                     }
                     UnitFreshness::Unknown => {
                         unknown_count += 1;
-                        if self.deps_library.get(package_name).and_then(|deps| deps.get(hash)).is_some() {
+                        if self
+                            .deps_library
+                            .get(package_name)
+                            .and_then(|deps| deps.get(hash))
+                            .is_some()
+                        {
                             unknown_with_deps += 1;
                         } else {
                             unknown_without_deps += 1;
@@ -341,7 +357,8 @@ impl Beatrice {
         let mut deps_without_fingerprints = 0;
         for (package_name, hash_map) in &self.deps_library {
             for hash in hash_map.keys() {
-                if !self.fingerprint_library
+                if !self
+                    .fingerprint_library
                     .get(package_name)
                     .map(|fp_map| fp_map.contains_key(hash))
                     .unwrap_or(false)
@@ -363,9 +380,15 @@ impl Beatrice {
             Correspondence Analysis:\n\
             - Deps items without fingerprints: {}\n\
             - Total deps items: {}",
-            fresh_count, fresh_with_deps, fresh_without_deps,
-            dirty_count, dirty_with_deps, dirty_without_deps,
-            unknown_count, unknown_with_deps, unknown_without_deps,
+            fresh_count,
+            fresh_with_deps,
+            fresh_without_deps,
+            dirty_count,
+            dirty_with_deps,
+            dirty_without_deps,
+            unknown_count,
+            unknown_with_deps,
+            unknown_without_deps,
             fresh_count + dirty_count + unknown_count,
             deps_without_fingerprints,
             self.deps_library.values().map(|m| m.len()).sum::<usize>()
@@ -375,40 +398,66 @@ impl Beatrice {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn test_report_functionality() {
         let mut beatrice = Beatrice::open("/tmp/test".into());
-        
+
         // Setup some test data
         let mut fingerprint_map = HashMap::new();
-        fingerprint_map.insert("hash1".to_string(), FingerprintInfo { freshness: UnitFreshness::Fresh });
-        fingerprint_map.insert("hash2".to_string(), FingerprintInfo { freshness: UnitFreshness::Dirty("test reason".to_string()) });
-        fingerprint_map.insert("hash3".to_string(), FingerprintInfo { freshness: UnitFreshness::Unknown });
-        beatrice.fingerprint_library.insert("test_package".to_string(), fingerprint_map);
+        fingerprint_map.insert(
+            "hash1".to_string(),
+            FingerprintInfo {
+                freshness: UnitFreshness::Fresh,
+            },
+        );
+        fingerprint_map.insert(
+            "hash2".to_string(),
+            FingerprintInfo {
+                freshness: UnitFreshness::Dirty("test reason".to_string()),
+            },
+        );
+        fingerprint_map.insert(
+            "hash3".to_string(),
+            FingerprintInfo {
+                freshness: UnitFreshness::Unknown,
+            },
+        );
+        beatrice
+            .fingerprint_library
+            .insert("test_package".to_string(), fingerprint_map);
 
         let mut deps_map = HashMap::new();
-        deps_map.insert("hash1".to_string(), ItemInfo { 
-            last_modified: std::time::SystemTime::now(), 
-            size: 1024 
-        });
-        deps_map.insert("hash4".to_string(), ItemInfo { 
-            last_modified: std::time::SystemTime::now(), 
-            size: 2048 
-        });
-        beatrice.deps_library.insert("test_package".to_string(), deps_map);
+        deps_map.insert(
+            "hash1".to_string(),
+            ItemInfo {
+                last_modified: std::time::SystemTime::now(),
+                size: 1024,
+            },
+        );
+        deps_map.insert(
+            "hash4".to_string(),
+            ItemInfo {
+                last_modified: std::time::SystemTime::now(),
+                size: 2048,
+            },
+        );
+        beatrice
+            .deps_library
+            .insert("test_package".to_string(), deps_map);
 
         let report = beatrice.report();
-        
+
         // Basic checks that the report contains expected information
         assert!(report.contains("Fresh: 1"));
         assert!(report.contains("Dirty: 1"));
         assert!(report.contains("Unknown: 1"));
         assert!(report.contains("Deps items without fingerprints: 1"));
         assert!(report.contains("Total deps items: 2"));
-        
+
         println!("Report:\n{}", report);
     }
 }
