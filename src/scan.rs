@@ -12,6 +12,7 @@ use cargo::util::interning::InternedString;
 use cargo::{CargoResult, GlobalContext};
 
 use crate::config::StaticScanConfig;
+use crate::beatrice::{Beatrice, UnitFreshness};
 
 pub struct Scanner {
     config: StaticScanConfig,
@@ -26,7 +27,7 @@ impl Scanner {
         })
     }
 
-    pub fn scan(&self, show_result: bool) -> CargoResult<()> {
+    pub fn scan(&self, betty: &mut Beatrice, show_result: bool) -> CargoResult<()> {
         // todo: get the manifest path using cargo utils
         let manifest_path = self.config.get_manifest_path();
 
@@ -84,8 +85,6 @@ impl Scanner {
         let interner = UnitInterner::new();
         let build_ctx = create_bcx(&workspace, &compile_options, &interner)?;
 
-        println!("rustc: {:?}", build_ctx.rustc());
-
         let num_total_units = build_ctx.unit_graph.len();
         println!("Found {num_total_units} units in the workspace");
 
@@ -107,6 +106,18 @@ impl Scanner {
 
             let fingerprint = calculate(&mut build_runner, unit)?;
             let freshness = self.check_unit_freshness(&mut build_runner, unit, &fingerprint)?;
+
+            // Extract package name and hash for updating Beatrice
+            let package_name = unit.pkg.name().to_string();
+            let fingerprint_hash = &freshness.current_fingerprint_hash;
+
+            // Update Beatrice with freshness information
+            let unit_freshness = if freshness.is_fresh {
+                UnitFreshness::Fresh
+            } else {
+                UnitFreshness::Dirty(freshness.dirty_reason.clone().unwrap_or_else(|| "Unknown reason".to_string()))
+            };
+            betty.update_fingerprint_freshness(&package_name, fingerprint_hash, unit_freshness);
 
             if freshness.is_fresh {
                 if show_result {

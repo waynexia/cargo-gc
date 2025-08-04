@@ -2,6 +2,7 @@ mod args;
 mod beatrice;
 mod config;
 mod scan;
+mod utils;
 
 use std::collections::HashSet;
 use std::fs;
@@ -103,7 +104,6 @@ fn main() -> Result<()> {
 
     let scan_config = StaticScanConfig::from_args(&args);
     let scanner = Scanner::try_new(scan_config).context("failed to create scanner")?;
-    scanner.scan(false).context("failed to scan the project")?;
 
     let fingerprints = get_fingerprints(&args)?;
     let metadata = MetadataCommand::new()
@@ -112,6 +112,17 @@ fn main() -> Result<()> {
         .context("failed to retrieve cargo metadata")?;
     let target_path = metadata.target_directory;
     let profile_path = target_path.join(args.profile);
+
+    // Create Beatrice instance early so we can use it with Scanner
+    let mut betty = Beatrice::open(profile_path.clone());
+    betty.load_library().context("failed to load library")?;
+
+    // Run scanner with Beatrice integration
+    scanner
+        .scan(&mut betty, false)
+        .context("failed to scan the project")?;
+    println!("{}", betty.report());
+
     let deps_path = profile_path.join("deps");
     let files_iter = fs::read_dir(deps_path.clone())
         .with_context(|| format!("failed to read deps directory: {deps_path:?}"))?;
@@ -157,7 +168,6 @@ fn main() -> Result<()> {
 
     println!("found {} outdated dep files", files_to_remove.len());
 
-    let mut betty = Beatrice::open(profile_path.clone());
     // let incremental_files_to_remove = incremental_files(&profile_path)?;
     let incremental_files_to_remove = betty
         .load_incremental()
