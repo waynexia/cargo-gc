@@ -19,12 +19,13 @@ pub struct ItemInfo {
 #[derive(Debug, Clone)]
 pub struct FingerprintInfo {
     pub freshness: UnitFreshness,
+    pub fingerprint_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum UnitFreshness {
     Fresh,
-    Dirty(String), // reason for being dirty
+    Dirty(String),
     Unknown,
 }
 
@@ -69,6 +70,7 @@ impl Beatrice {
 
     /// Scan the fingerprint directory and populate the fingerprint library with item information.
     /// Normalizes package names from dash format (used in .fingerprint) to underscore format for storage.
+    /// Also reads the actual fingerprint hash from the fingerprint file inside each directory.
     fn scan_fingerprint_directory(
         dir_path: &Utf8PathBuf,
         target_library: &mut HashMap<String, HashMap<String, FingerprintInfo>>,
@@ -78,28 +80,76 @@ impl Beatrice {
 
         for entry in dir_iter {
             let entry = entry.with_context(|| format!("failed to read entry in {dir_path:?}"))?;
+            let entry_path = entry.path();
             let entry_name = entry.file_name().to_string_lossy().to_string();
 
-            // Extract name and hash from the entry name
-            let Some((name, hash)) = extract_fingerprint(&entry_name) else {
+            // Skip if not a directory
+            if !entry
+                .file_type()
+                .with_context(|| format!("failed to get file type for {:?}", entry_path))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            // Extract name and metadata hash from the directory name
+            let Some((name, metadata_hash)) = extract_fingerprint(&entry_name) else {
                 continue;
             };
 
             // Normalize package name to underscore format for internal storage
             let normalized_name = normalize_package_name(&name);
 
+            // Read the fingerprint file inside this directory
+            let fingerprint_hash = Self::read_fingerprint_file(&entry_path)
+                .with_context(|| format!("failed to read fingerprint file in {entry_path:?}"))?;
+
             let fingerprint_info = FingerprintInfo {
                 freshness: UnitFreshness::Unknown,
+                fingerprint_hash,
             };
 
-            // Insert into the nested HashMap structure using normalized name
+            // Insert into the nested HashMap structure using normalized name and metadata hash
             target_library
                 .entry(normalized_name)
                 .or_default()
-                .insert(hash, fingerprint_info);
+                .insert(metadata_hash, fingerprint_info);
         }
 
         Ok(())
+    }
+
+    /// Read the fingerprint file inside a fingerprint directory.
+    /// The fingerprint file has no extension and doesn't start with "dep".
+    fn read_fingerprint_file(fingerprint_dir: &std::path::Path) -> Result<Option<String>> {
+        let dir_iter = fs::read_dir(fingerprint_dir).with_context(|| {
+            format!("failed to read fingerprint directory: {fingerprint_dir:?}")
+        })?;
+
+        for entry in dir_iter {
+            let entry =
+                entry.with_context(|| format!("failed to read entry in {fingerprint_dir:?}"))?;
+            let entry_path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip directories
+            if entry
+                .file_type()
+                .with_context(|| format!("failed to get file type for {:?}", entry_path))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            // Check if this is the fingerprint file: no extension and doesn't start with "dep"
+            if !file_name.contains('.') && !file_name.starts_with("dep") {
+                let content = fs::read_to_string(&entry_path)
+                    .with_context(|| format!("failed to read fingerprint file: {entry_path:?}"))?;
+                return Ok(Some(content.trim().to_string()));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Scan the deps directory and populate the deps library with item information.
@@ -276,6 +326,30 @@ impl Beatrice {
             .map(|fingerprint_info| &fingerprint_info.freshness)
     }
 
+    /// Get the stored fingerprint hash for verification
+    /// Works with normalized (underscore) package names
+    pub fn get_stored_fingerprint_hash(&self, name: &str, metadata_hash: &str) -> Option<&String> {
+        let normalized_name = normalize_package_name(name);
+
+        self.fingerprint_library
+            .get(&normalized_name)
+            .and_then(|hash_map| hash_map.get(metadata_hash))
+            .and_then(|fingerprint_info| fingerprint_info.fingerprint_hash.as_ref())
+    }
+
+    /// Verify if a computed fingerprint hash matches the stored one
+    /// Returns true if they match, false if they don't match or don't exist
+    pub fn verify_fingerprint_hash(
+        &self,
+        name: &str,
+        metadata_hash: &str,
+        computed_hash: &str,
+    ) -> bool {
+        self.get_stored_fingerprint_hash(name, metadata_hash)
+            .map(|stored_hash| stored_hash == computed_hash)
+            .unwrap_or(false)
+    }
+
     /// Check if a package exists in the fingerprint library
     /// Works with normalized (underscore) package names
     pub fn has_package(&self, name: &str) -> bool {
@@ -412,18 +486,21 @@ mod tests {
             "hash1".to_string(),
             FingerprintInfo {
                 freshness: UnitFreshness::Fresh,
+                fingerprint_hash: Some("fingerprint1".to_string()),
             },
         );
         fingerprint_map.insert(
             "hash2".to_string(),
             FingerprintInfo {
                 freshness: UnitFreshness::Dirty("test reason".to_string()),
+                fingerprint_hash: Some("fingerprint2".to_string()),
             },
         );
         fingerprint_map.insert(
             "hash3".to_string(),
             FingerprintInfo {
                 freshness: UnitFreshness::Unknown,
+                fingerprint_hash: None,
             },
         );
         beatrice

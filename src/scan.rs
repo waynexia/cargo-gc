@@ -107,11 +107,18 @@ impl Scanner {
             let fingerprint = calculate(&mut build_runner, unit)?;
             let freshness = self.check_unit_freshness(&mut build_runner, unit, &fingerprint)?;
 
-            // Extract package name and hash for updating Beatrice
+            // Extract package name and metadata hash for updating Beatrice
             let package_name = unit.pkg.name().to_string();
-            let fingerprint_hash = &freshness.current_fingerprint_hash;
+            let metadata_hash = &freshness.metadata_hash;
 
-            // Update Beatrice with freshness information
+            // Verify if the computed fingerprint hash matches the stored one
+            let hash_matches = betty.verify_fingerprint_hash(
+                &package_name,
+                metadata_hash,
+                &freshness.current_fingerprint_hash,
+            );
+
+            // Update Beatrice with freshness information using metadata hash as key
             let unit_freshness = if freshness.is_fresh {
                 UnitFreshness::Fresh
             } else {
@@ -122,25 +129,31 @@ impl Scanner {
                         .unwrap_or_else(|| "Unknown reason".to_string()),
                 )
             };
-            betty.update_fingerprint_freshness(&package_name, fingerprint_hash, unit_freshness);
+            betty.update_fingerprint_freshness(&package_name, metadata_hash, unit_freshness);
 
             if freshness.is_fresh {
                 if show_result {
+                    let hash_status = if hash_matches { "✓" } else { "✗" };
                     println!(
-                        "✅ Unit {} is fresh, fingerprint hash: {}, path: {}",
+                        "✅ Unit {} is fresh, metadata hash: {}, fingerprint hash: {} {}, path: {}",
                         unit.pkg.package_id(),
+                        freshness.metadata_hash,
                         freshness.current_fingerprint_hash,
+                        hash_status,
                         freshness.fingerprint_path
                     );
                 }
                 fresh_count += 1;
             } else {
                 if show_result {
+                    let hash_status = if hash_matches { "✓" } else { "✗" };
                     println!(
-                        "❌ Unit {} is dirty: {:?}, fingerprint hash: {}, path: {}",
+                        "❌ Unit {} is dirty: {:?}, metadata hash: {}, fingerprint hash: {} {}, path: {}",
                         unit.pkg.package_id(),
                         freshness.dirty_reason,
+                        freshness.metadata_hash,
                         freshness.current_fingerprint_hash,
+                        hash_status,
                         freshness.fingerprint_path
                     );
                 }
@@ -158,11 +171,20 @@ impl Scanner {
         unit: &Unit,
         fingerprint: &Arc<Fingerprint>,
     ) -> CargoResult<DependencyFreshness> {
-        let current_hash = cargo::util::hex::to_hex(fingerprint.hash_u64());
+        let current_fingerprint_hash = cargo::util::hex::to_hex(fingerprint.hash_u64());
 
         // Get the path to the old fingerprint file in the .fingerprint directory
         let fingerprint_file_path = build_runner.files().fingerprint_file_path(unit, "");
         let fingerprint_path_str = fingerprint_file_path.to_string_lossy().to_string();
+
+        // Extract metadata hash from the fingerprint directory name
+        let metadata_hash = fingerprint_file_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|name| name.to_str())
+            .and_then(|name| crate::extract_fingerprint(name))
+            .map(|(_, hash)| hash)
+            .unwrap_or_else(|| "unknown".to_string());
 
         // Compare with the old fingerprint to determine freshness
         // This uses Cargo's internal comparison logic that checks:
@@ -189,7 +211,8 @@ impl Scanner {
             unit: unit.clone(),
             is_fresh,
             dirty_reason: dirty_reason_str,
-            current_fingerprint_hash: current_hash,
+            current_fingerprint_hash,
+            metadata_hash,
             fingerprint_path: fingerprint_path_str,
         })
     }
@@ -201,5 +224,6 @@ struct DependencyFreshness {
     is_fresh: bool,
     dirty_reason: Option<String>,
     current_fingerprint_hash: String,
+    metadata_hash: String,
     fingerprint_path: String,
 }
