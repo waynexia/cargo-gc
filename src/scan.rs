@@ -261,6 +261,16 @@ impl Scanner {
         let mut keep_fingerprint_dirs = HashSet::new();
 
         for unit in units {
+            if unit.mode.is_doc_test() {
+                if show_result {
+                    println!(
+                        "Skipping doctest unit {} target={}",
+                        unit.pkg.package_id(),
+                        unit.target.name(),
+                    );
+                }
+                continue;
+            }
             let fingerprint = calculate(&mut build_runner, &unit)?;
             let unit_scan = self.inspect_unit(&mut build_runner, &unit, &fingerprint)?;
             keep_fingerprint_dirs.insert(unit_scan.fingerprint_dir.clone());

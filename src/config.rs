@@ -28,7 +28,9 @@ pub struct ScanSpec {
 
 impl ScanSpec {
     fn new(requested_profile: &str, intent: UserIntent) -> Self {
-        let filter = CompileFilter::new_all_targets();
+        let filter = CompileFilter::Default {
+            required_features_filterable: true,
+        };
         let has_dev_units = if filter.need_dev_deps(intent) {
             HasDevUnits::Yes
         } else {
@@ -39,7 +41,7 @@ impl ScanSpec {
             requested_profile: requested_profile.to_string(),
             intent,
             has_dev_units,
-            force_all_targets: ForceAllTargets::Yes,
+            force_all_targets: ForceAllTargets::No,
             packages: Packages::Default,
             filter,
         }
@@ -230,14 +232,8 @@ mod tests {
         assert_eq!(config.scan_specs[2].requested_profile, "test");
 
         for spec in &config.scan_specs {
-            assert!(matches!(spec.force_all_targets, ForceAllTargets::Yes));
-            assert!(matches!(
-                spec.filter,
-                CompileFilter::Only {
-                    all_targets: true,
-                    ..
-                }
-            ));
+            assert!(matches!(spec.force_all_targets, ForceAllTargets::No));
+            assert!(matches!(spec.filter, CompileFilter::Default { .. }));
         }
     }
 
