@@ -40,6 +40,7 @@ fn main() -> Result<()> {
 
     let scan_config = StaticScanConfig::from_args(&args)
         .context("failed to parse forwarded cargo build arguments")?;
+    let profile_dir_name = profile_to_dir(&scan_config.profile_name).to_string();
     let scanner = Scanner::try_new(scan_config).context("failed to create scanner")?;
 
     let metadata = MetadataCommand::new()
@@ -47,7 +48,7 @@ fn main() -> Result<()> {
         .exec()
         .context("failed to retrieve cargo metadata")?;
     let target_path = metadata.target_directory;
-    let profile_path = target_path.join(profile_to_dir(&args.profile));
+    let profile_path = target_path.join(profile_dir_name);
 
     let mut betty = Beatrice::open(profile_path.clone());
     betty.load_library().context("failed to load library")?;

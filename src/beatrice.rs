@@ -9,7 +9,6 @@ use cargo_metadata::camino::Utf8PathBuf;
 
 use crate::extract_fingerprint;
 use crate::scan::ScanResult;
-use crate::utils::normalize_package_name;
 
 #[derive(Debug, Clone)]
 pub struct ItemInfo {
@@ -163,23 +162,13 @@ impl Beatrice {
         let deps_files = self
             .dep_artifacts
             .iter()
-            .filter(|artifact| !Self::is_dep_info_file(&artifact.path))
-            .filter(|artifact| !scan.live_dep_paths.contains(&artifact.path))
-            .filter(|artifact| {
-                !Self::matches_current_names(scan, &Self::artifact_candidate_names(&artifact.path))
-            })
+            .filter(|artifact| !scan.keep_paths.contains(&artifact.path))
             .map(|artifact| artifact.path.clone())
             .collect();
         let fingerprint_dirs = self
             .fingerprint_dirs
             .iter()
-            .filter(|dir| !scan.live_fingerprint_dirs.contains(&dir.path))
-            .filter(|dir| {
-                let Some(name) = Self::fingerprint_package_name(&dir.path) else {
-                    return true;
-                };
-                !scan.current_package_names.contains(&name)
-            })
+            .filter(|dir| !scan.keep_paths.contains(&dir.path))
             .map(|dir| dir.path.clone())
             .collect();
 
@@ -284,52 +273,6 @@ impl Beatrice {
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext == "d")
     }
-
-    fn matches_current_names(scan: &ScanResult, candidate_names: &[String]) -> bool {
-        candidate_names.iter().any(|name| {
-            scan.current_package_names.contains(name) || scan.current_target_names.contains(name)
-        })
-    }
-
-    fn fingerprint_package_name(path: &Path) -> Option<String> {
-        let file_name = path.file_name()?.to_str()?;
-        let (name, _) = extract_fingerprint(file_name)?;
-        Some(normalize_package_name(&name))
-    }
-
-    fn artifact_candidate_names(path: &Path) -> Vec<String> {
-        let Some((name, _)) = Self::artifact_name_and_hash(path) else {
-            return Vec::new();
-        };
-
-        let mut candidates = vec![normalize_package_name(&name)];
-        if let Some(stripped) = name.strip_prefix("lib")
-            && !stripped.is_empty()
-        {
-            let normalized = normalize_package_name(stripped);
-            if !candidates.contains(&normalized) {
-                candidates.push(normalized);
-            }
-        }
-
-        candidates
-    }
-
-    fn artifact_name_and_hash(path: &Path) -> Option<(String, String)> {
-        let mut file_name = path.file_name()?.to_str()?.to_string();
-
-        while let Some((base, ext)) = file_name.rsplit_once('.') {
-            if !matches!(
-                ext,
-                "dwp" | "rlib" | "rmeta" | "so" | "dylib" | "dll" | "exe"
-            ) {
-                break;
-            }
-            file_name = base.to_string();
-        }
-
-        extract_fingerprint(&file_name)
-    }
 }
 
 #[cfg(test)]
@@ -359,6 +302,10 @@ mod tests {
                     info: ItemInfo { size: 10 },
                 },
                 DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/live.d"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
                     path: PathBuf::from("/tmp/test/deps/stale.rlib"),
                     info: ItemInfo { size: 10 },
                 },
@@ -366,23 +313,18 @@ mod tests {
                     path: PathBuf::from("/tmp/test/deps/stale.d"),
                     info: ItemInfo { size: 10 },
                 },
-                DepArtifact {
-                    path: PathBuf::from("/tmp/test/deps/stale-binary-deadbeef"),
-                    info: ItemInfo { size: 10 },
-                },
             ],
         };
 
-        let live_dep_paths = HashSet::from([PathBuf::from("/tmp/test/deps/live.rlib")]);
+        let live_dep_paths = HashSet::from([
+            PathBuf::from("/tmp/test/deps/live.rlib"),
+            PathBuf::from("/tmp/test/deps/live.d"),
+        ]);
         let live_fingerprint_dirs = HashSet::from([PathBuf::from("/tmp/test/.fingerprint/live")]);
         let scan = ScanResult::from_live_sets(live_dep_paths, live_fingerprint_dirs);
 
         let plan = beatrice.plan_cleanup(&scan);
 
-        assert!(
-            plan.deps_files
-                .contains(&PathBuf::from("/tmp/test/deps/stale.rlib"))
-        );
         assert!(
             !plan
                 .deps_files
@@ -391,25 +333,29 @@ mod tests {
         assert!(
             !plan
                 .deps_files
-                .contains(&PathBuf::from("/tmp/test/deps/stale.d"))
+                .contains(&PathBuf::from("/tmp/test/deps/live.d"))
         );
         assert!(
             plan.deps_files
-                .contains(&PathBuf::from("/tmp/test/deps/stale-binary-deadbeef"))
+                .contains(&PathBuf::from("/tmp/test/deps/stale.rlib"))
         );
         assert!(
-            plan.fingerprint_dirs
-                .contains(&PathBuf::from("/tmp/test/.fingerprint/stale"))
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/stale.d"))
         );
         assert!(
             !plan
                 .fingerprint_dirs
                 .contains(&PathBuf::from("/tmp/test/.fingerprint/live"))
         );
+        assert!(
+            plan.fingerprint_dirs
+                .contains(&PathBuf::from("/tmp/test/.fingerprint/stale"))
+        );
     }
 
     #[test]
-    fn test_plan_cleanup_keeps_stale_same_package_hashes_conservatively() {
+    fn test_plan_cleanup_removes_stale_same_package_hashes_when_not_kept() {
         let beatrice = Beatrice {
             profile_dir: "/tmp/test".into(),
             fingerprint_dirs: vec![
@@ -428,17 +374,27 @@ mod tests {
                     info: ItemInfo { size: 10 },
                 },
                 DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libfoo-livehash.d"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
                     path: PathBuf::from("/tmp/test/deps/libfoo-oldhash.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libfoo-oldhash.d"),
                     info: ItemInfo { size: 10 },
                 },
             ],
         };
 
-        let mut scan = ScanResult::from_live_sets(
-            HashSet::from([PathBuf::from("/tmp/test/deps/libfoo-livehash.rlib")]),
+        let scan = ScanResult::from_live_sets(
+            HashSet::from([
+                PathBuf::from("/tmp/test/deps/libfoo-livehash.rlib"),
+                PathBuf::from("/tmp/test/deps/libfoo-livehash.d"),
+            ]),
             HashSet::from([PathBuf::from("/tmp/test/.fingerprint/foo-livehash")]),
         );
-        scan.current_package_names = HashSet::from([String::from("foo")]);
 
         let plan = beatrice.plan_cleanup(&scan);
 
@@ -450,7 +406,15 @@ mod tests {
         assert!(
             !plan
                 .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libfoo-livehash.d"))
+        );
+        assert!(
+            plan.deps_files
                 .contains(&PathBuf::from("/tmp/test/deps/libfoo-oldhash.rlib"))
+        );
+        assert!(
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libfoo-oldhash.d"))
         );
         assert!(
             !plan
@@ -458,14 +422,13 @@ mod tests {
                 .contains(&PathBuf::from("/tmp/test/.fingerprint/foo-livehash"))
         );
         assert!(
-            !plan
-                .fingerprint_dirs
+            plan.fingerprint_dirs
                 .contains(&PathBuf::from("/tmp/test/.fingerprint/foo-oldhash"))
         );
     }
 
     #[test]
-    fn test_plan_cleanup_keeps_hashed_binary_for_current_target() {
+    fn test_plan_cleanup_removes_unkept_hashed_binary() {
         let beatrice = Beatrice {
             profile_dir: "/tmp/test".into(),
             fingerprint_dirs: Vec::new(),
@@ -475,31 +438,48 @@ mod tests {
             }],
         };
 
-        let mut scan = ScanResult::from_live_sets(HashSet::new(), HashSet::new());
-        scan.current_target_names = HashSet::from([String::from("demo")]);
-
+        let scan = ScanResult::from_live_sets(HashSet::new(), HashSet::new());
         let plan = beatrice.plan_cleanup(&scan);
 
-        assert!(plan.deps_files.is_empty());
+        assert!(
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/demo-deadbeef"))
+        );
     }
 
     #[test]
-    fn test_plan_cleanup_keeps_lib_prefixed_target_name() {
+    fn test_plan_cleanup_keeps_exact_dep_info_path_only_when_present() {
         let beatrice = Beatrice {
             profile_dir: "/tmp/test".into(),
             fingerprint_dirs: Vec::new(),
-            dep_artifacts: vec![DepArtifact {
-                path: PathBuf::from("/tmp/test/deps/libdemo-deadbeef"),
-                info: ItemInfo { size: 10 },
-            }],
+            dep_artifacts: vec![
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libdemo-deadbeef.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libdemo-deadbeef.d"),
+                    info: ItemInfo { size: 10 },
+                },
+            ],
         };
 
-        let mut scan = ScanResult::from_live_sets(HashSet::new(), HashSet::new());
-        scan.current_target_names = HashSet::from([String::from("libdemo")]);
+        let scan = ScanResult::from_live_sets(
+            HashSet::from([PathBuf::from("/tmp/test/deps/libdemo-deadbeef.rlib")]),
+            HashSet::new(),
+        );
 
         let plan = beatrice.plan_cleanup(&scan);
 
-        assert!(plan.deps_files.is_empty());
+        assert!(
+            !plan
+                .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libdemo-deadbeef.rlib"))
+        );
+        assert!(
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libdemo-deadbeef.d"))
+        );
     }
 
     #[test]
