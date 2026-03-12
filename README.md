@@ -21,9 +21,10 @@ cargo gc
 It will check and remove all outdated build artifacts in the current project. See `cargo gc --help` for more information.
 
 # Limitations / Known issues
-- [ ] It needs to invoke `cargo build` that takes lots of time.
-- [ ] Need to re-link after GC
+- [x] It needs to invoke `cargo build` that takes lots of time.
+- [x] Need to re-link after GC
 - [ ] `cargo check` will re-check from scratch
+- [ ] Some stale files are still kept
 
 # Explaination
 
@@ -32,4 +33,4 @@ It will check and remove all outdated build artifacts in the current project. Se
 Compare to other utils like `cargo sweep`, this one is based on the informations provided by cargo itself rather than filesystem timestamp. So it can be more accurate and still avoiding recompilation as much as possible.
 
 # Next steps
-Technically, it's possible to implement a "perfect" GC that can remove all outdated artifacts without any recompilation. And done this in a totally static way (i.e., without invoking `cargo build`). As the tuple ("crate name", "fingreprint") can be computed outside of `cargo`.
+Technically, it's possible to implement a "perfect" GC that can remove all outdated artifacts without any recompilation. And done this in a totally static way (i.e., without invoking `cargo build`).
