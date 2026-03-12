@@ -1,79 +1,81 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use cargo_metadata::camino::Utf8PathBuf;
 
 use crate::extract_fingerprint;
+use crate::scan::ScanResult;
 use crate::utils::normalize_package_name;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ItemInfo {
-    pub last_modified: SystemTime,
     pub size: u64,
 }
 
 #[derive(Debug, Clone)]
-pub struct FingerprintInfo {
-    pub freshness: UnitFreshness,
+pub struct FingerprintDirectory {
+    pub path: PathBuf,
     pub fingerprint_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub enum UnitFreshness {
-    Fresh,
-    Dirty(String),
-    Unknown,
+pub struct DepArtifact {
+    pub path: PathBuf,
+    pub info: ItemInfo,
+}
+
+#[derive(Debug, Default)]
+pub struct CleanupPlan {
+    pub deps_files: HashSet<PathBuf>,
+    pub fingerprint_dirs: HashSet<PathBuf>,
+    pub incremental_dirs: HashSet<PathBuf>,
+}
+
+impl CleanupPlan {
+    pub fn total_paths(&self) -> usize {
+        self.deps_files.len() + self.fingerprint_dirs.len() + self.incremental_dirs.len()
+    }
 }
 
 pub struct Beatrice {
     profile_dir: Utf8PathBuf,
-    /// Nested HashMap for .fingerprint directory: name -> (metadata hash -> FingerprintInfo)
-    #[allow(dead_code)]
-    pub fingerprint_library: HashMap<String, HashMap<String, FingerprintInfo>>,
-    /// Nested HashMap for deps directory: name -> (hash -> ItemInfo)
-    #[allow(dead_code)]
-    pub deps_library: HashMap<String, HashMap<String, ItemInfo>>,
+    pub fingerprint_dirs: Vec<FingerprintDirectory>,
+    pub dep_artifacts: Vec<DepArtifact>,
 }
 
 impl Beatrice {
     pub fn open(profile_dir: Utf8PathBuf) -> Self {
         Self {
             profile_dir,
-            fingerprint_library: HashMap::new(),
-            deps_library: HashMap::new(),
+            fingerprint_dirs: Vec::new(),
+            dep_artifacts: Vec::new(),
         }
     }
 
-    #[allow(dead_code)]
     pub fn load_library(&mut self) -> Result<()> {
-        self.fingerprint_library.clear();
-        self.deps_library.clear();
+        self.fingerprint_dirs.clear();
+        self.dep_artifacts.clear();
 
-        // Scan .fingerprint subdirectory
         let fingerprint_path = self.profile_dir.join(".fingerprint");
         if fingerprint_path.exists() {
-            Self::scan_fingerprint_directory(&fingerprint_path, &mut self.fingerprint_library)?;
+            Self::scan_fingerprint_directory(&fingerprint_path, &mut self.fingerprint_dirs)?;
         }
 
-        // Scan deps subdirectory
         let deps_path = self.profile_dir.join("deps");
         if deps_path.exists() {
-            Self::scan_deps_directory(&deps_path, &mut self.deps_library)?;
+            Self::scan_deps_directory(&deps_path, &mut self.dep_artifacts)?;
         }
 
         Ok(())
     }
 
-    /// Scan the fingerprint directory and populate the fingerprint library with item information.
-    /// Normalizes package names from dash format (used in .fingerprint) to underscore format for storage.
-    /// Also reads the actual fingerprint hash from the fingerprint file inside each directory.
     fn scan_fingerprint_directory(
         dir_path: &Utf8PathBuf,
-        target_library: &mut HashMap<String, HashMap<String, FingerprintInfo>>,
+        target_library: &mut Vec<FingerprintDirectory>,
     ) -> Result<()> {
         let dir_iter = fs::read_dir(dir_path)
             .with_context(|| format!("failed to read directory: {dir_path:?}"))?;
@@ -81,9 +83,7 @@ impl Beatrice {
         for entry in dir_iter {
             let entry = entry.with_context(|| format!("failed to read entry in {dir_path:?}"))?;
             let entry_path = entry.path();
-            let entry_name = entry.file_name().to_string_lossy().to_string();
 
-            // Skip if not a directory
             if !entry
                 .file_type()
                 .with_context(|| format!("failed to get file type for {:?}", entry_path))?
@@ -92,36 +92,20 @@ impl Beatrice {
                 continue;
             }
 
-            // Extract name and metadata hash from the directory name
-            let Some((name, metadata_hash)) = extract_fingerprint(&entry_name) else {
-                continue;
-            };
-
-            // Normalize package name to underscore format for internal storage
-            let normalized_name = normalize_package_name(&name);
-
-            // Read the fingerprint file inside this directory
-            let fingerprint_hash = Self::read_fingerprint_file(&entry_path)
+            let fingerprint_hash = Self::read_fingerprint_hash_file(&entry_path)
                 .with_context(|| format!("failed to read fingerprint file in {entry_path:?}"))?;
 
-            let fingerprint_info = FingerprintInfo {
-                freshness: UnitFreshness::Unknown,
+            target_library.push(FingerprintDirectory {
+                path: entry_path,
                 fingerprint_hash,
-            };
-
-            // Insert into the nested HashMap structure using normalized name and metadata hash
-            target_library
-                .entry(normalized_name)
-                .or_default()
-                .insert(metadata_hash, fingerprint_info);
+            });
         }
 
+        target_library.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(())
     }
 
-    /// Read the fingerprint file inside a fingerprint directory.
-    /// The fingerprint file has no extension and doesn't start with "dep".
-    fn read_fingerprint_file(fingerprint_dir: &std::path::Path) -> Result<Option<String>> {
+    fn read_fingerprint_hash_file(fingerprint_dir: &Path) -> Result<Option<String>> {
         let dir_iter = fs::read_dir(fingerprint_dir).with_context(|| {
             format!("failed to read fingerprint directory: {fingerprint_dir:?}")
         })?;
@@ -132,7 +116,6 @@ impl Beatrice {
             let entry_path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
 
-            // Skip directories
             if entry
                 .file_type()
                 .with_context(|| format!("failed to get file type for {:?}", entry_path))?
@@ -141,7 +124,6 @@ impl Beatrice {
                 continue;
             }
 
-            // Check if this is the fingerprint file: no extension and doesn't start with "dep"
             if !file_name.contains('.') && !file_name.starts_with("dep") {
                 let content = fs::read_to_string(&entry_path)
                     .with_context(|| format!("failed to read fingerprint file: {entry_path:?}"))?;
@@ -152,11 +134,9 @@ impl Beatrice {
         Ok(None)
     }
 
-    /// Scan the deps directory and populate the deps library with item information.
-    /// Normalizes package names to underscore format for consistent storage.
     fn scan_deps_directory(
         dir_path: &Utf8PathBuf,
-        target_library: &mut HashMap<String, HashMap<String, ItemInfo>>,
+        target_library: &mut Vec<DepArtifact>,
     ) -> Result<()> {
         let dir_iter = fs::read_dir(dir_path)
             .with_context(|| format!("failed to read directory: {dir_path:?}"))?;
@@ -164,75 +144,53 @@ impl Beatrice {
         for entry in dir_iter {
             let entry = entry.with_context(|| format!("failed to read entry in {dir_path:?}"))?;
             let entry_path = entry.path();
-            let entry_name = entry.file_name().to_string_lossy().to_string();
-
-            // Extract name and hash from the entry name
-            let Some((name, hash)) = extract_fingerprint(&entry_name) else {
-                continue;
-            };
-
-            // Normalize package name to underscore format for internal storage
-            let normalized_name = normalize_package_name(&name);
-
-            // Get metadata for the entry
             let metadata = entry
                 .metadata()
                 .with_context(|| format!("failed to get metadata of {:?}", entry_path))?;
-
-            let last_modified = metadata
-                .modified()
-                .with_context(|| format!("failed to get modified time of {:?}", entry_path))?;
-
-            // Calculate size
-            let size = if metadata.is_dir() {
-                Self::calculate_dir_size(&entry_path)?
-            } else {
-                metadata.len()
-            };
-
-            let item_info = ItemInfo {
-                last_modified,
-                size,
-            };
-
-            // Insert into the nested HashMap structure using normalized name
-            target_library
-                .entry(normalized_name)
-                .or_default()
-                .insert(hash, item_info);
+            target_library.push(DepArtifact {
+                path: entry_path,
+                info: ItemInfo {
+                    size: metadata.len(),
+                },
+            });
         }
 
+        target_library.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(())
     }
 
-    fn calculate_dir_size(dir_path: &std::path::Path) -> Result<u64> {
-        let mut total_size = 0;
+    pub fn plan_cleanup(&self, scan: &ScanResult) -> CleanupPlan {
+        let deps_files = self
+            .dep_artifacts
+            .iter()
+            .filter(|artifact| !Self::is_dep_info_file(&artifact.path))
+            .filter(|artifact| !scan.live_dep_paths.contains(&artifact.path))
+            .filter(|artifact| {
+                !Self::matches_current_names(scan, &Self::artifact_candidate_names(&artifact.path))
+            })
+            .map(|artifact| artifact.path.clone())
+            .collect();
+        let fingerprint_dirs = self
+            .fingerprint_dirs
+            .iter()
+            .filter(|dir| !scan.live_fingerprint_dirs.contains(&dir.path))
+            .filter(|dir| {
+                let Some(name) = Self::fingerprint_package_name(&dir.path) else {
+                    return true;
+                };
+                !scan.current_package_names.contains(&name)
+            })
+            .map(|dir| dir.path.clone())
+            .collect();
 
-        fn visit_dir(dir: &std::path::Path, total: &mut u64) -> Result<()> {
-            let dir_iter =
-                fs::read_dir(dir).with_context(|| format!("failed to read directory: {dir:?}"))?;
-
-            for entry in dir_iter {
-                let entry = entry.with_context(|| format!("failed to read entry in {dir:?}"))?;
-                let entry_path = entry.path();
-                let metadata = entry
-                    .metadata()
-                    .with_context(|| format!("failed to get metadata of {:?}", entry_path))?;
-
-                if metadata.is_dir() {
-                    visit_dir(&entry_path, total)?;
-                } else {
-                    *total += metadata.len();
-                }
-            }
-            Ok(())
+        CleanupPlan {
+            deps_files,
+            fingerprint_dirs,
+            incremental_dirs: HashSet::new(),
         }
-
-        visit_dir(dir_path, &mut total_size)?;
-        Ok(total_size)
     }
 
-    pub fn load_incremental(&mut self) -> Result<HashSet<String>> {
+    pub fn load_incremental(&self) -> Result<HashSet<PathBuf>> {
         let incremental_path = self.profile_dir.join("incremental");
         if !incremental_path.exists() {
             return Ok(HashSet::new());
@@ -241,13 +199,11 @@ impl Beatrice {
         let mut pathbuf_to_remove = HashSet::new();
         let mut latest_one: HashMap<String, (String, SystemTime)> = HashMap::new();
 
-        // walk the first level of the incremental directory
         let dir_iter = fs::read_dir(incremental_path.clone()).with_context(|| {
             format!("failed to read incremental directory: {incremental_path:?}")
         })?;
         for dir in dir_iter {
             let dir = dir.with_context(|| format!("failed to read dir in {incremental_path:?}"))?;
-            // only handle dir
             if !dir
                 .file_type()
                 .map(|open_dir| open_dir.is_dir())
@@ -260,24 +216,26 @@ impl Beatrice {
             else {
                 continue;
             };
-            // get the last modified time of the dir
             let last_modified = dir
                 .metadata()
                 .with_context(|| format!("failed to get metadata of {:?}", dir.path()))?
                 .modified()
                 .with_context(|| format!("failed to get modified time of {:?}", dir.path()))?;
-            // update the latest one
             match latest_one.entry(dep_name.clone()) {
                 Entry::Occupied(mut entry) => {
                     let (prev_hash, prev_last_modified) = entry.get_mut();
                     if last_modified > *prev_last_modified {
+                        let previous_hash = prev_hash.clone();
                         *prev_hash = hash;
                         *prev_last_modified = last_modified;
-                        pathbuf_to_remove
-                            .insert(incremental_path.join(format!("{dep_name}-{prev_hash}")));
+                        pathbuf_to_remove.insert(
+                            incremental_path
+                                .join(format!("{dep_name}-{previous_hash}"))
+                                .into(),
+                        );
                     } else {
                         pathbuf_to_remove
-                            .insert(incremental_path.join(format!("{dep_name}-{hash}")));
+                            .insert(incremental_path.join(format!("{dep_name}-{hash}")).into());
                     }
                 }
                 Entry::Vacant(entry) => {
@@ -286,255 +244,295 @@ impl Beatrice {
             }
         }
 
-        let to_remove = pathbuf_to_remove
-            .into_iter()
-            .map(|p| {
-                Ok(p.canonicalize_utf8()
-                    .with_context(|| format!("cannot canonicalize path {p:?}"))?
-                    .to_string())
-            })
-            .collect::<Result<HashSet<_>>>()?;
-
-        Ok(to_remove)
+        Ok(pathbuf_to_remove)
     }
 
-    /// Update the freshness of a specific fingerprint
-    /// Works with normalized (underscore) package names
-    pub fn update_fingerprint_freshness(
-        &mut self,
-        name: &str,
-        hash: &str,
-        freshness: UnitFreshness,
-    ) {
-        let normalized_name = normalize_package_name(name);
-
-        if let Some(hash_map) = self.fingerprint_library.get_mut(&normalized_name)
-            && let Some(fingerprint_info) = hash_map.get_mut(hash)
-        {
-            fingerprint_info.freshness = freshness;
-        }
-    }
-
-    /// Get the freshness of a specific fingerprint
-    /// Works with normalized (underscore) package names
-    pub fn get_fingerprint_freshness(&self, name: &str, hash: &str) -> Option<&UnitFreshness> {
-        let normalized_name = normalize_package_name(name);
-
-        self.fingerprint_library
-            .get(&normalized_name)
-            .and_then(|hash_map| hash_map.get(hash))
-            .map(|fingerprint_info| &fingerprint_info.freshness)
-    }
-
-    /// Get the stored fingerprint hash for verification
-    /// Works with normalized (underscore) package names
-    pub fn get_stored_fingerprint_hash(&self, name: &str, metadata_hash: &str) -> Option<&String> {
-        let normalized_name = normalize_package_name(name);
-
-        self.fingerprint_library
-            .get(&normalized_name)
-            .and_then(|hash_map| hash_map.get(metadata_hash))
-            .and_then(|fingerprint_info| fingerprint_info.fingerprint_hash.as_ref())
-    }
-
-    /// Verify if a computed fingerprint hash matches the stored one
-    /// Returns true if they match, false if they don't match or don't exist
-    pub fn verify_fingerprint_hash(
-        &self,
-        name: &str,
-        metadata_hash: &str,
-        computed_hash: &str,
-    ) -> bool {
-        self.get_stored_fingerprint_hash(name, metadata_hash)
-            .map(|stored_hash| stored_hash == computed_hash)
-            .unwrap_or(false)
-    }
-
-    /// Check if a package exists in the fingerprint library
-    /// Works with normalized (underscore) package names
-    pub fn has_package(&self, name: &str) -> bool {
-        let normalized_name = normalize_package_name(name);
-        self.fingerprint_library.contains_key(&normalized_name)
-    }
-
-    /// Get deps info for a package
-    /// Works with normalized (underscore) package names
-    pub fn get_deps_info(&self, name: &str, hash: &str) -> Option<&ItemInfo> {
-        let normalized_name = normalize_package_name(name);
-
-        self.deps_library
-            .get(&normalized_name)
-            .and_then(|hash_map| hash_map.get(hash))
-    }
-
-    /// Generate a report showing fingerprint and deps correspondence
     pub fn report(&self) -> String {
-        let mut fresh_count = 0;
-        let mut dirty_count = 0;
-        let mut unknown_count = 0;
-
-        let mut fresh_with_deps = 0;
-        let mut dirty_with_deps = 0;
-        let mut unknown_with_deps = 0;
-        let mut fresh_without_deps = 0;
-        let mut dirty_without_deps = 0;
-        let mut unknown_without_deps = 0;
-
-        // Analyze fingerprints and their correspondence with deps
-        for (package_name, hash_map) in &self.fingerprint_library {
-            for (hash, fingerprint_info) in hash_map {
-                match &fingerprint_info.freshness {
-                    UnitFreshness::Fresh => {
-                        fresh_count += 1;
-                        if self
-                            .deps_library
-                            .get(package_name)
-                            .and_then(|deps| deps.get(hash))
-                            .is_some()
-                        {
-                            fresh_with_deps += 1;
-                        } else {
-                            fresh_without_deps += 1;
-                        }
-                    }
-                    UnitFreshness::Dirty(_) => {
-                        dirty_count += 1;
-                        if self
-                            .deps_library
-                            .get(package_name)
-                            .and_then(|deps| deps.get(hash))
-                            .is_some()
-                        {
-                            dirty_with_deps += 1;
-                        } else {
-                            dirty_without_deps += 1;
-                        }
-                    }
-                    UnitFreshness::Unknown => {
-                        unknown_count += 1;
-                        if self
-                            .deps_library
-                            .get(package_name)
-                            .and_then(|deps| deps.get(hash))
-                            .is_some()
-                        {
-                            unknown_with_deps += 1;
-                        } else {
-                            unknown_without_deps += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Count deps items that don't have corresponding fingerprints
-        let mut deps_without_fingerprints = 0;
-        for (package_name, hash_map) in &self.deps_library {
-            for hash in hash_map.keys() {
-                if !self
-                    .fingerprint_library
-                    .get(package_name)
-                    .map(|fp_map| fp_map.contains_key(hash))
-                    .unwrap_or(false)
-                {
-                    deps_without_fingerprints += 1;
-                }
-            }
-        }
+        let dep_info_files = self
+            .dep_artifacts
+            .iter()
+            .filter(|artifact| Self::is_dep_info_file(&artifact.path))
+            .count();
+        let stored_fingerprint_hashes = self
+            .fingerprint_dirs
+            .iter()
+            .filter(|dir| dir.fingerprint_hash.is_some())
+            .count();
+        let dep_bytes: u64 = self
+            .dep_artifacts
+            .iter()
+            .map(|artifact| artifact.info.size)
+            .sum();
 
         format!(
-            "Beatrice Report:\n\
-            \n\
-            Fingerprint Analysis:\n\
-            - Fresh: {} (with deps: {}, without deps: {})\n\
-            - Dirty: {} (with deps: {}, without deps: {})\n\
-            - Unknown: {} (with deps: {}, without deps: {})\n\
-            - Total fingerprints: {}\n\
-            \n\
-            Correspondence Analysis:\n\
-            - Deps items without fingerprints: {}\n\
-            - Total deps items: {}",
-            fresh_count,
-            fresh_with_deps,
-            fresh_without_deps,
-            dirty_count,
-            dirty_with_deps,
-            dirty_without_deps,
-            unknown_count,
-            unknown_with_deps,
-            unknown_without_deps,
-            fresh_count + dirty_count + unknown_count,
-            deps_without_fingerprints,
-            self.deps_library.values().map(|m| m.len()).sum::<usize>()
+            "Beatrice Library Report:\n\
+            - Fingerprint dirs on disk: {}\n\
+            - Fingerprint dirs with stored hash: {}\n\
+            - Deps entries on disk: {}\n\
+            - Deps dep-info files kept untouched: {}\n\
+            - Deps bytes on disk: {}",
+            self.fingerprint_dirs.len(),
+            stored_fingerprint_hashes,
+            self.dep_artifacts.len(),
+            dep_info_files,
+            dep_bytes,
         )
+    }
+
+    fn is_dep_info_file(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "d")
+    }
+
+    fn matches_current_names(scan: &ScanResult, candidate_names: &[String]) -> bool {
+        candidate_names.iter().any(|name| {
+            scan.current_package_names.contains(name) || scan.current_target_names.contains(name)
+        })
+    }
+
+    fn fingerprint_package_name(path: &Path) -> Option<String> {
+        let file_name = path.file_name()?.to_str()?;
+        let (name, _) = extract_fingerprint(file_name)?;
+        Some(normalize_package_name(&name))
+    }
+
+    fn artifact_candidate_names(path: &Path) -> Vec<String> {
+        let Some((name, _)) = Self::artifact_name_and_hash(path) else {
+            return Vec::new();
+        };
+
+        let mut candidates = vec![normalize_package_name(&name)];
+        if let Some(stripped) = name.strip_prefix("lib")
+            && !stripped.is_empty()
+        {
+            let normalized = normalize_package_name(stripped);
+            if !candidates.contains(&normalized) {
+                candidates.push(normalized);
+            }
+        }
+
+        candidates
+    }
+
+    fn artifact_name_and_hash(path: &Path) -> Option<(String, String)> {
+        let mut file_name = path.file_name()?.to_str()?.to_string();
+
+        while let Some((base, ext)) = file_name.rsplit_once('.') {
+            if !matches!(
+                ext,
+                "dwp" | "rlib" | "rmeta" | "so" | "dylib" | "dll" | "exe"
+            ) {
+                break;
+            }
+            file_name = base.to_string();
+        }
+
+        extract_fingerprint(&file_name)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
 
     use super::*;
 
     #[test]
+    fn test_plan_cleanup_uses_exact_paths() {
+        let beatrice = Beatrice {
+            profile_dir: "/tmp/test".into(),
+            fingerprint_dirs: vec![
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/live"),
+                    fingerprint_hash: Some("hash".to_string()),
+                },
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/stale"),
+                    fingerprint_hash: Some("hash".to_string()),
+                },
+            ],
+            dep_artifacts: vec![
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/live.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/stale.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/stale.d"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/stale-binary-deadbeef"),
+                    info: ItemInfo { size: 10 },
+                },
+            ],
+        };
+
+        let live_dep_paths = HashSet::from([PathBuf::from("/tmp/test/deps/live.rlib")]);
+        let live_fingerprint_dirs = HashSet::from([PathBuf::from("/tmp/test/.fingerprint/live")]);
+        let scan = ScanResult::from_live_sets(live_dep_paths, live_fingerprint_dirs);
+
+        let plan = beatrice.plan_cleanup(&scan);
+
+        assert!(
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/stale.rlib"))
+        );
+        assert!(
+            !plan
+                .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/live.rlib"))
+        );
+        assert!(
+            !plan
+                .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/stale.d"))
+        );
+        assert!(
+            plan.deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/stale-binary-deadbeef"))
+        );
+        assert!(
+            plan.fingerprint_dirs
+                .contains(&PathBuf::from("/tmp/test/.fingerprint/stale"))
+        );
+        assert!(
+            !plan
+                .fingerprint_dirs
+                .contains(&PathBuf::from("/tmp/test/.fingerprint/live"))
+        );
+    }
+
+    #[test]
+    fn test_plan_cleanup_keeps_stale_same_package_hashes_conservatively() {
+        let beatrice = Beatrice {
+            profile_dir: "/tmp/test".into(),
+            fingerprint_dirs: vec![
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/foo-livehash"),
+                    fingerprint_hash: Some("livehash".to_string()),
+                },
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/foo-oldhash"),
+                    fingerprint_hash: Some("oldhash".to_string()),
+                },
+            ],
+            dep_artifacts: vec![
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libfoo-livehash.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libfoo-oldhash.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+            ],
+        };
+
+        let mut scan = ScanResult::from_live_sets(
+            HashSet::from([PathBuf::from("/tmp/test/deps/libfoo-livehash.rlib")]),
+            HashSet::from([PathBuf::from("/tmp/test/.fingerprint/foo-livehash")]),
+        );
+        scan.current_package_names = HashSet::from([String::from("foo")]);
+
+        let plan = beatrice.plan_cleanup(&scan);
+
+        assert!(
+            !plan
+                .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libfoo-livehash.rlib"))
+        );
+        assert!(
+            !plan
+                .deps_files
+                .contains(&PathBuf::from("/tmp/test/deps/libfoo-oldhash.rlib"))
+        );
+        assert!(
+            !plan
+                .fingerprint_dirs
+                .contains(&PathBuf::from("/tmp/test/.fingerprint/foo-livehash"))
+        );
+        assert!(
+            !plan
+                .fingerprint_dirs
+                .contains(&PathBuf::from("/tmp/test/.fingerprint/foo-oldhash"))
+        );
+    }
+
+    #[test]
+    fn test_plan_cleanup_keeps_hashed_binary_for_current_target() {
+        let beatrice = Beatrice {
+            profile_dir: "/tmp/test".into(),
+            fingerprint_dirs: Vec::new(),
+            dep_artifacts: vec![DepArtifact {
+                path: PathBuf::from("/tmp/test/deps/demo-deadbeef"),
+                info: ItemInfo { size: 10 },
+            }],
+        };
+
+        let mut scan = ScanResult::from_live_sets(HashSet::new(), HashSet::new());
+        scan.current_target_names = HashSet::from([String::from("demo")]);
+
+        let plan = beatrice.plan_cleanup(&scan);
+
+        assert!(plan.deps_files.is_empty());
+    }
+
+    #[test]
+    fn test_plan_cleanup_keeps_lib_prefixed_target_name() {
+        let beatrice = Beatrice {
+            profile_dir: "/tmp/test".into(),
+            fingerprint_dirs: Vec::new(),
+            dep_artifacts: vec![DepArtifact {
+                path: PathBuf::from("/tmp/test/deps/libdemo-deadbeef"),
+                info: ItemInfo { size: 10 },
+            }],
+        };
+
+        let mut scan = ScanResult::from_live_sets(HashSet::new(), HashSet::new());
+        scan.current_target_names = HashSet::from([String::from("libdemo")]);
+
+        let plan = beatrice.plan_cleanup(&scan);
+
+        assert!(plan.deps_files.is_empty());
+    }
+
+    #[test]
     fn test_report_functionality() {
-        let mut beatrice = Beatrice::open("/tmp/test".into());
-
-        // Setup some test data
-        let mut fingerprint_map = HashMap::new();
-        fingerprint_map.insert(
-            "hash1".to_string(),
-            FingerprintInfo {
-                freshness: UnitFreshness::Fresh,
-                fingerprint_hash: Some("fingerprint1".to_string()),
-            },
-        );
-        fingerprint_map.insert(
-            "hash2".to_string(),
-            FingerprintInfo {
-                freshness: UnitFreshness::Dirty("test reason".to_string()),
-                fingerprint_hash: Some("fingerprint2".to_string()),
-            },
-        );
-        fingerprint_map.insert(
-            "hash3".to_string(),
-            FingerprintInfo {
-                freshness: UnitFreshness::Unknown,
-                fingerprint_hash: None,
-            },
-        );
-        beatrice
-            .fingerprint_library
-            .insert("test_package".to_string(), fingerprint_map);
-
-        let mut deps_map = HashMap::new();
-        deps_map.insert(
-            "hash1".to_string(),
-            ItemInfo {
-                last_modified: std::time::SystemTime::now(),
-                size: 1024,
-            },
-        );
-        deps_map.insert(
-            "hash4".to_string(),
-            ItemInfo {
-                last_modified: std::time::SystemTime::now(),
-                size: 2048,
-            },
-        );
-        beatrice
-            .deps_library
-            .insert("test_package".to_string(), deps_map);
+        let beatrice = Beatrice {
+            profile_dir: "/tmp/test".into(),
+            fingerprint_dirs: vec![
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/one"),
+                    fingerprint_hash: Some("hash".to_string()),
+                },
+                FingerprintDirectory {
+                    path: PathBuf::from("/tmp/test/.fingerprint/two"),
+                    fingerprint_hash: None,
+                },
+            ],
+            dep_artifacts: vec![
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libone.rlib"),
+                    info: ItemInfo { size: 10 },
+                },
+                DepArtifact {
+                    path: PathBuf::from("/tmp/test/deps/libone.d"),
+                    info: ItemInfo { size: 10 },
+                },
+            ],
+        };
 
         let report = beatrice.report();
-
-        // Basic checks that the report contains expected information
-        assert!(report.contains("Fresh: 1"));
-        assert!(report.contains("Dirty: 1"));
-        assert!(report.contains("Unknown: 1"));
-        assert!(report.contains("Deps items without fingerprints: 1"));
-        assert!(report.contains("Total deps items: 2"));
-
-        println!("Report:\n{}", report);
+        assert!(report.contains("Fingerprint dirs on disk: 2"));
+        assert!(report.contains("Fingerprint dirs with stored hash: 1"));
+        assert!(report.contains("Deps entries on disk: 2"));
+        assert!(report.contains("Deps dep-info files kept untouched: 1"));
+        assert!(report.contains("Deps bytes on disk: 20"));
     }
 }

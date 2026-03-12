@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use cargo::core::compiler::{CompileKind, CompileMode};
 use cargo::core::resolver::{CliFeatures, ForceAllTargets, HasDevUnits};
+use cargo::ops::{CompileFilter, Packages};
 
 use crate::args::Args;
 
@@ -12,6 +14,20 @@ struct ParsedCargoArgs {
     no_default_features: bool,
     target_args: Vec<String>,
     additional_profile: Option<String>,
+
+    packages: Vec<String>,
+    workspace: bool,
+    excludes: Vec<String>,
+    lib_only: bool,
+    bins: Vec<String>,
+    all_bins: bool,
+    examples: Vec<String>,
+    all_examples: bool,
+    tests: Vec<String>,
+    all_tests: bool,
+    benches: Vec<String>,
+    all_benches: bool,
+    all_targets: bool,
 }
 
 #[allow(dead_code)]
@@ -27,6 +43,10 @@ pub struct StaticScanConfig {
     pub has_dev_units: HasDevUnits,
     /// Force all targets to be considered
     pub force_all_targets: ForceAllTargets,
+    /// Package selection to mirror cargo build
+    pub packages: Packages,
+    /// Target filter to mirror cargo build
+    pub filter: CompileFilter,
     /// Optional custom profile settings
     pub profile_name: String,
 
@@ -44,10 +64,43 @@ impl StaticScanConfig {
         let mut no_default_features = false;
         let mut target_args = Vec::new();
         let mut additional_profile = None;
+        let mut packages = Vec::new();
+        let mut workspace = false;
+        let mut excludes = Vec::new();
+        let mut lib_only = false;
+        let mut bins = Vec::new();
+        let mut all_bins = false;
+        let mut examples = Vec::new();
+        let mut all_examples = false;
+        let mut tests = Vec::new();
+        let mut all_tests = false;
+        let mut benches = Vec::new();
+        let mut all_benches = false;
+        let mut all_targets = false;
 
         let mut i = 0;
         while i < cargo_args.len() {
             match cargo_args[i].as_str() {
+                "-p" | "--package" => {
+                    if i + 1 < cargo_args.len() {
+                        packages.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--workspace" => {
+                    workspace = true;
+                    i += 1;
+                }
+                "--exclude" => {
+                    if i + 1 < cargo_args.len() {
+                        excludes.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
                 "--features" => {
                     if i + 1 < cargo_args.len() {
                         features_args.push(cargo_args[i + 1].clone());
@@ -80,9 +133,70 @@ impl StaticScanConfig {
                         i += 1;
                     }
                 }
+                "--lib" => {
+                    lib_only = true;
+                    i += 1;
+                }
+                "--bin" => {
+                    if i + 1 < cargo_args.len() {
+                        bins.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--bins" => {
+                    all_bins = true;
+                    i += 1;
+                }
+                "--example" => {
+                    if i + 1 < cargo_args.len() {
+                        examples.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--examples" => {
+                    all_examples = true;
+                    i += 1;
+                }
+                "--test" => {
+                    if i + 1 < cargo_args.len() {
+                        tests.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--tests" => {
+                    all_tests = true;
+                    i += 1;
+                }
+                "--bench" => {
+                    if i + 1 < cargo_args.len() {
+                        benches.push(cargo_args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--benches" => {
+                    all_benches = true;
+                    i += 1;
+                }
+                "--all-targets" => {
+                    all_targets = true;
+                    i += 1;
+                }
                 _ => {
+                    if let Some(package) = cargo_args[i].strip_prefix("--package=") {
+                        packages.push(package.to_string());
+                    } else if let Some(package) = cargo_args[i].strip_prefix("-p=") {
+                        packages.push(package.to_string());
+                    }
                     // Handle --features=value syntax
-                    if cargo_args[i].starts_with("--features=") {
+                    else if cargo_args[i].starts_with("--features=") {
                         if let Some(feature_list) = cargo_args[i].strip_prefix("--features=") {
                             features_args.push(feature_list.to_string());
                         }
@@ -98,6 +212,16 @@ impl StaticScanConfig {
                         && let Some(profile) = cargo_args[i].strip_prefix("--profile=")
                     {
                         additional_profile = Some(profile.to_string());
+                    } else if let Some(exclude) = cargo_args[i].strip_prefix("--exclude=") {
+                        excludes.push(exclude.to_string());
+                    } else if let Some(bin) = cargo_args[i].strip_prefix("--bin=") {
+                        bins.push(bin.to_string());
+                    } else if let Some(example) = cargo_args[i].strip_prefix("--example=") {
+                        examples.push(example.to_string());
+                    } else if let Some(test) = cargo_args[i].strip_prefix("--test=") {
+                        tests.push(test.to_string());
+                    } else if let Some(bench) = cargo_args[i].strip_prefix("--bench=") {
+                        benches.push(bench.to_string());
                     }
                     i += 1;
                 }
@@ -110,10 +234,23 @@ impl StaticScanConfig {
             no_default_features,
             target_args,
             additional_profile,
+            packages,
+            workspace,
+            excludes,
+            lib_only,
+            bins,
+            all_bins,
+            examples,
+            all_examples,
+            tests,
+            all_tests,
+            benches,
+            all_benches,
+            all_targets,
         }
     }
 
-    pub fn from_args(args: &Args) -> Self {
+    pub fn from_args(args: &Args) -> Result<Self> {
         let parsed = Self::parse_cargo_args(&args.cargo_args);
 
         // Determine the final profile to use
@@ -129,7 +266,7 @@ impl StaticScanConfig {
                 false,
                 !parsed.no_default_features,
             )
-            .unwrap_or_else(|_| CliFeatures::new_all(false))
+            .context("invalid feature selection in forwarded cargo args")?
         };
 
         let requested_kinds = if parsed.target_args.is_empty() {
@@ -153,20 +290,43 @@ impl StaticScanConfig {
         };
 
         let force_all_targets = ForceAllTargets::No;
+        let packages = Packages::from_flags(parsed.workspace, parsed.excludes, parsed.packages)
+            .context("invalid package selection in forwarded cargo args")?;
+        let filter = CompileFilter::from_raw_arguments(
+            parsed.lib_only,
+            parsed.bins,
+            parsed.all_bins,
+            parsed.tests,
+            parsed.all_tests,
+            parsed.examples,
+            parsed.all_examples,
+            parsed.benches,
+            parsed.all_benches,
+            parsed.all_targets,
+        );
+        let has_dev_units = if matches!(has_dev_units, HasDevUnits::Yes)
+            || filter.need_dev_deps(cargo::core::compiler::UserIntent::Build)
+        {
+            HasDevUnits::Yes
+        } else {
+            HasDevUnits::No
+        };
 
         // Use current working dir as root. Maybe need to handle a case when running
         // in a subdir or sub-crate.
         let work_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-        Self {
+        Ok(Self {
             features,
             requested_kinds,
             mode,
             has_dev_units,
             force_all_targets,
+            packages,
+            filter,
             profile_name: effective_profile,
             work_dir,
-        }
+        })
     }
 
     pub fn get_manifest_path(&self) -> PathBuf {
@@ -176,6 +336,8 @@ impl StaticScanConfig {
 
 #[cfg(test)]
 mod tests {
+    use cargo::ops::{CompileFilter, FilterRule};
+
     use super::*;
 
     #[derive(Debug)]
@@ -303,7 +465,7 @@ mod tests {
                 cargo_args: test_case.cargo_args.iter().map(|s| s.to_string()).collect(),
             };
 
-            let config = StaticScanConfig::from_args(&args);
+            let config = StaticScanConfig::from_args(&args).expect("config should parse");
 
             // Assert all expected values
             assert_eq!(
@@ -346,5 +508,53 @@ mod tests {
                 test_case.name
             );
         }
+    }
+
+    #[test]
+    fn test_static_scan_config_parses_bin_filter() {
+        let args = Args {
+            profile: "dev".to_string(),
+            verbose: false,
+            dry_run: false,
+            cargo_args: vec!["--bin".to_string(), "greptime".to_string()],
+        };
+
+        let config = StaticScanConfig::from_args(&args).expect("config should parse");
+
+        match config.filter {
+            CompileFilter::Only {
+                all_targets,
+                lib,
+                bins,
+                examples,
+                tests,
+                benches,
+            } => {
+                assert!(!all_targets);
+                assert_eq!(format!("{lib:?}"), "False");
+                assert!(matches!(bins, FilterRule::Just(names) if names == vec!["greptime"]));
+                assert!(matches!(examples, FilterRule::Just(names) if names.is_empty()));
+                assert!(matches!(tests, FilterRule::Just(names) if names.is_empty()));
+                assert!(matches!(benches, FilterRule::Just(names) if names.is_empty()));
+            }
+            other => panic!("expected specific compile filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_static_scan_config_rejects_invalid_package_selection() {
+        let args = Args {
+            profile: "dev".to_string(),
+            verbose: false,
+            dry_run: false,
+            cargo_args: vec!["--exclude".to_string(), "foo".to_string()],
+        };
+
+        let err = StaticScanConfig::from_args(&args)
+            .expect_err("config should reject --exclude without --workspace");
+        assert!(
+            err.to_string()
+                .contains("invalid package selection in forwarded cargo args")
+        );
     }
 }

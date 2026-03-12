@@ -64,12 +64,4 @@ impl Args {
             cargo_args: cli.cargo_args,
         }
     }
-
-    pub fn cargo_profile_args(&self) -> Vec<String> {
-        if self.profile != "debug" {
-            vec!["--profile".into(), self.profile.clone()]
-        } else {
-            vec![]
-        }
-    }
 }
