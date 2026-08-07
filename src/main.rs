@@ -11,7 +11,7 @@ use humansize::DECIMAL;
 
 use crate::beatrice::{Beatrice, CleanupPlan};
 use crate::catalog::{Catalog, CollectIntent, parse_intent_list, probe_intents};
-use crate::utils::{RemovalStats, profile_to_dir, remove_dirs, remove_files};
+use crate::utils::{RemovalStats, path_size, profile_to_dir, remove_dirs, remove_files};
 
 /// Collect the profile flag forwarded via trailing cargo args, e.g.
 /// `--profile release`, `--profile=release` or `--release`.
@@ -36,23 +36,53 @@ fn forwarded_profile(cargo_args: &[String]) -> (Option<String>, bool) {
 }
 
 fn report_cleanup_plan(plan: &CleanupPlan) {
+    let reclaim = plan_reclaim_bytes(plan);
     println!(
         "Cleanup Plan:\n\
         - Stale deps artifacts: {}\n\
         - Stale fingerprint dirs: {}\n\
         - Stale incremental dirs: {}\n\
-        - Total filesystem entries: {}",
+        - Total filesystem entries: {}\n\
+        - Estimated reclaim: {}",
         plan.deps_files.len(),
         plan.fingerprint_dirs.len(),
         plan.incremental_dirs.len(),
         plan.total_paths(),
+        humansize::format_size(reclaim, DECIMAL),
     );
 }
 
+/// Sum up the sizes of every path currently planned for removal.
+fn plan_reclaim_bytes(plan: &CleanupPlan) -> u64 {
+    plan.deps_files
+        .iter()
+        .map(|path| path_size(path))
+        .chain(
+            plan.fingerprint_dirs
+                .iter()
+                .map(|path| path_size(path)),
+        )
+        .chain(
+            plan.incremental_dirs
+                .iter()
+                .map(|path| path_size(path)),
+        )
+        .sum()
+}
+
 fn print_plan_paths(plan: &CleanupPlan) {
-    println!("deps files to remove {:#?}", plan.deps_files);
-    println!("fingerprint dirs to remove {:#?}", plan.fingerprint_dirs);
-    println!("incremental dirs to remove {:#?}", plan.incremental_dirs);
+    for (label, paths) in [
+        ("deps files to remove", &plan.deps_files),
+        ("fingerprint dirs to remove", &plan.fingerprint_dirs),
+        ("incremental dirs to remove", &plan.incremental_dirs),
+    ] {
+        println!("{label}:");
+        let mut sorted: Vec<_> = paths.iter().collect();
+        sorted.sort();
+        for path in sorted {
+            println!("  {}", path.display());
+        }
+    }
 }
 
 /// Resolve which intents to collect. Precedence: CLI first, then the
@@ -94,7 +124,7 @@ fn resolve_intents(
 }
 
 fn main() -> Result<()> {
-    let args = Args::from_cli(Cli::parse());
+    let args = Args::from(Cli::parse());
 
     // The effective profile decides which output directory to operate on and
     // how `cargo` is invoked. Forwarded cargo args take precedence.
@@ -132,7 +162,7 @@ fn main() -> Result<()> {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    println!("Collecting live artifacts from: {intent_names}");
+    println!("Collecting live artifacts: {intent_names}");
 
     let catalog = Catalog::collect(
         profile_path.as_std_path(),
@@ -142,10 +172,11 @@ fn main() -> Result<()> {
     )
     .context("failed to collect live artifacts from the current toolchain")?;
     println!(
-        "Collected {} live artifact hashes from the current cargo toolchain",
+        "Collected {} artifact hashes from the current toolchain",
         catalog.hashes.len()
     );
 
+    println!("Scanning {}", profile_path);
     let betty = Beatrice::scan(profile_path.as_std_path()).context("failed to scan the project")?;
     println!("{}", betty.report());
 
@@ -157,7 +188,7 @@ fn main() -> Result<()> {
     }
 
     if args.dry_run {
-        println!("abort due to dry run");
+        println!("Dry run: no changes were made");
         return Ok(());
     }
 

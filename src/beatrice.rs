@@ -107,10 +107,10 @@ impl Beatrice {
 
     pub fn report(&self) -> String {
         format!(
-            "Beatrice Library Report:\n\
-            - Fingerprint dirs on disk: {}\n\
-            - Deps entries on disk: {}\n\
-            - Incremental dirs on disk: {}",
+            "Library report:\n\
+            - Fingerprint dirs: {}\n\
+            - Deps entries:     {}\n\
+            - Incremental dirs: {}",
             self.fingerprint_dirs.len(),
             self.dep_artifacts.len(),
             self.incremental_dirs.len(),

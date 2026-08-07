@@ -31,12 +31,12 @@ struct GcCommand {
     release: bool,
 
     /// GC artifacts with the specified profile
-    #[arg(long)]
+    #[arg(short, long)]
     profile: Option<String>,
 
     /// Only collect the given intent(s): build, check or test. Repeatable.
     /// Defaults to probing the target directory for the intents in use.
-    #[arg(long, value_enum)]
+    #[arg(short, long)]
     collect: Vec<CollectIntent>,
 
     /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments.
@@ -52,9 +52,9 @@ pub struct Args {
     pub cargo_args: Vec<String>,
 }
 
-impl Args {
-    pub fn from_cli(cli: Cli) -> Self {
-        let Command::Gc(cli) = cli.command;
+impl From<Cli> for Args {
+    fn from(value: Cli) -> Self {
+        let Command::Gc(cli) = value.command;
         let profile = match (cli.profile, cli.release) {
             (None, true) => "release".into(),
             (None, false) => "dev".into(),
