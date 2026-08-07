@@ -1,7 +1,6 @@
 mod args;
 mod beatrice;
-mod config;
-mod scan;
+mod catalog;
 mod utils;
 
 use anyhow::{Context, Result};
@@ -11,14 +10,29 @@ use clap::Parser;
 use humansize::DECIMAL;
 
 use crate::beatrice::{Beatrice, CleanupPlan};
-use crate::config::StaticScanConfig;
-use crate::scan::Scanner;
+use crate::catalog::Catalog;
 use crate::utils::{RemovalStats, profile_to_dir, remove_dirs, remove_files};
 
-fn extract_fingerprint(file_stem: &str) -> Option<(String, String)> {
-    file_stem
-        .rsplit_once('-')
-        .map(|(name, fingerprint)| (name.to_string(), fingerprint.to_string()))
+/// Collect the profile flag forwarded via trailing cargo args, e.g.
+/// `--profile release`, `--profile=release` or `--release`.
+fn forwarded_profile(cargo_args: &[String]) -> (Option<String>, bool) {
+    let mut i = 0;
+    while i < cargo_args.len() {
+        match cargo_args[i].as_str() {
+            "--release" => return (None, true),
+            "--profile" => {
+                if let Some(profile) = cargo_args.get(i + 1) {
+                    return (Some(profile.clone()), false);
+                }
+                i += 1;
+            }
+            arg if arg.starts_with("--profile=") => {
+                return (Some(arg["--profile=".len()..].to_string()), false);
+            }
+            _ => i += 1,
+        }
+    }
+    (None, false)
 }
 
 fn report_cleanup_plan(plan: &CleanupPlan) {
@@ -35,46 +49,60 @@ fn report_cleanup_plan(plan: &CleanupPlan) {
     );
 }
 
+fn print_plan_paths(plan: &CleanupPlan) {
+    println!("deps files to remove {:#?}", plan.deps_files);
+    println!("fingerprint dirs to remove {:#?}", plan.fingerprint_dirs);
+    println!("incremental dirs to remove {:#?}", plan.incremental_dirs);
+}
+
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
 
-    let scan_config = StaticScanConfig::from_args(&args)
-        .context("failed to parse forwarded cargo build arguments")?;
-    let profile_dir_name = profile_to_dir(&scan_config.profile_name).to_string();
-    let scanner = Scanner::try_new(scan_config).context("failed to create scanner")?;
+    // The effective profile decides which output directory to operate on and
+    // how `cargo` is invoked. Forwarded cargo args take precedence.
+    let (forwarded_profile, forwarded_release) = forwarded_profile(&args.cargo_args);
+    let effective_profile = forwarded_profile
+        .clone()
+        .unwrap_or_else(|| args.profile.clone());
+
+    let profile_arg: Option<String> = if forwarded_profile.is_some() || forwarded_release {
+        // Already conveyed by the forwarded cargo args.
+        None
+    } else {
+        match args.profile.as_str() {
+            "dev" => None,
+            "release" => Some("--release".to_string()),
+            other => Some(format!("--profile={other}")),
+        }
+    };
 
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
         .context("failed to retrieve cargo metadata")?;
-    let target_path = metadata.target_directory;
-    let profile_path = target_path.join(profile_dir_name);
+    let profile_path = metadata
+        .target_directory
+        .join(profile_to_dir(&effective_profile));
 
-    let mut betty = Beatrice::open(profile_path.clone());
-    betty.load_library().context("failed to load library")?;
+    let catalog = Catalog::collect(
+        profile_path.as_std_path(),
+        profile_arg.as_deref(),
+        &args.cargo_args,
+    )
+    .context("failed to collect live artifacts from the current toolchain")?;
+    println!(
+        "Collected {} live artifact hashes from the current cargo toolchain",
+        catalog.hashes.len()
+    );
+
+    let betty = Beatrice::scan(profile_path.as_std_path()).context("failed to scan the project")?;
     println!("{}", betty.report());
 
-    let scan_result = scanner
-        .scan(args.verbose)
-        .context("failed to statically scan the project")?;
-    println!("{}", scan_result.report());
-
-    let mut cleanup_plan = betty.plan_cleanup(&scan_result);
-    cleanup_plan.incremental_dirs = betty
-        .load_incremental()
-        .context("failed to calculate incremental files")?;
+    let cleanup_plan = betty.plan_cleanup(&catalog.hashes);
     report_cleanup_plan(&cleanup_plan);
 
     if args.verbose {
-        println!("deps files to remove {:#?}", cleanup_plan.deps_files);
-        println!(
-            "fingerprint dirs to remove {:#?}",
-            cleanup_plan.fingerprint_dirs
-        );
-        println!(
-            "incremental dirs to remove {:#?}",
-            cleanup_plan.incremental_dirs
-        );
+        print_plan_paths(&cleanup_plan);
     }
 
     if args.dry_run {

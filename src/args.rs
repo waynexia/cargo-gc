@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, command};
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(author, version, about)]

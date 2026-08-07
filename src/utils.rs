@@ -2,6 +2,19 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Split a file stem like `libfoo-0123abcd...` (or `foo-0123abcd...d`) into
+/// `(name, hash)`. Only accepts cargo's 16-hex-digit artifact hashes so that
+/// unrelated names like `weird-name` are rejected.
+pub fn extract_fingerprint(path: &Path) -> Option<(String, String)> {
+    let stem = path.file_stem()?.to_str()?;
+    let (name, hash) = stem.rsplit_once('-')?;
+    if hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some((name.to_string(), hash.to_string()))
+    } else {
+        None
+    }
+}
+
 /// Convert profile name to target directory name
 /// Cargo's built-in profiles map to these output directories.
 pub fn profile_to_dir(profile: &str) -> &str {
@@ -91,6 +104,23 @@ pub fn remove_dirs(paths: &HashSet<PathBuf>) -> RemovalStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_fingerprint() {
+        assert_eq!(
+            extract_fingerprint(Path::new("libfoo-0123456789abcdef.rlib")),
+            Some(("libfoo".to_string(), "0123456789abcdef".to_string()))
+        );
+        assert_eq!(
+            extract_fingerprint(Path::new("foo-0123456789abcdef.d")),
+            Some(("foo".to_string(), "0123456789abcdef".to_string()))
+        );
+        assert_eq!(extract_fingerprint(Path::new("README")), None);
+        assert_eq!(
+            extract_fingerprint(Path::new("prefix-abc-not-a-hash")),
+            None
+        );
+    }
 
     #[test]
     fn test_profile_to_dir() {

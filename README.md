@@ -21,16 +21,26 @@ cargo gc
 It will check and remove all outdated build artifacts in the current project. See `cargo gc --help` for more information.
 
 # Limitations / Known issues
-- [x] It needs to invoke `cargo build` that takes lots of time.
-- [x] Need to re-link after GC
-- [ ] `cargo check` will re-check from scratch
-- [ ] Some stale files are still kept
+- [x] Invokes `cargo build`, `cargo check` and `cargo test --no-run` once to
+	reconcile the cache with the current toolchain.
+- [ ] Artifacts produced by a *running* `cargo test` (the lib-test harness of
+	weird binaries) may be collected on the next run; recompilation there is
+	cheap and limited.
+- [ ] Some unknown entries are kept conservatively.
 
 # Explaination
 
-`cargo gc` uses the output information from `cargo build` to help recognize build artifacts in use, and removes all others. In the current implementation, top-level arficats are not recognized and leads to re-link after GC.
+`cargo gc` invokes the *real* `cargo` of the current toolchain (the `CARGO`
+environment variable set by the `cargo` proxy) with
+`--message-format=json` and collects the file-name hashes of every produced
+artifact. Any file or fingerprint directory whose hash is not part of that
+collection is stale and gets removed. Because the collection always comes
+from the same `cargo` that would build the project, results never drift with
+toolchain updates.
 
-Compare to other utils like `cargo sweep`, this one is based on the informations provided by cargo itself rather than filesystem timestamp. So it can be more accurate and still avoiding recompilation as much as possible.
+Compare to other utils like `cargo sweep`, this one is based on the
+informations provided by cargo itself rather than filesystem timestamp. So it
+can be more accurate and still avoiding recompilation as much as possible.
 
 # Next steps
 Technically, it's possible to implement a "perfect" GC that can remove all outdated artifacts without any recompilation. And done this in a totally static way (i.e., without invoking `cargo build`).
