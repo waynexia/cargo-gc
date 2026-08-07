@@ -57,16 +57,8 @@ fn plan_reclaim_bytes(plan: &CleanupPlan) -> u64 {
     plan.deps_files
         .iter()
         .map(|path| path_size(path))
-        .chain(
-            plan.fingerprint_dirs
-                .iter()
-                .map(|path| path_size(path)),
-        )
-        .chain(
-            plan.incremental_dirs
-                .iter()
-                .map(|path| path_size(path)),
-        )
+        .chain(plan.fingerprint_dirs.iter().map(|path| path_size(path)))
+        .chain(plan.incremental_dirs.iter().map(|path| path_size(path)))
         .sum()
 }
 
@@ -164,6 +156,13 @@ fn main() -> Result<()> {
         .join(profile_to_dir(&effective_profile));
 
     let intents = resolve_intents(&args.collect, profile_path.as_std_path(), &metadata)?;
+    if intents.is_empty() {
+        println!(
+            "Warning: no build artifacts found in {profile_path} yet, nothing to do.\n\
+             Run `cargo build` first, or force collection with `cargo gc --collect build`."
+        );
+        return Ok(());
+    }
     let intent_names = intents
         .iter()
         .map(|intent| match intent {

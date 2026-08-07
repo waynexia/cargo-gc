@@ -50,7 +50,7 @@ pub fn parse_intent_list(values: &str) -> Vec<CollectIntent> {
 /// - a `.rlib` in `deps` means a real build was run
 /// - a `.rmeta` without a matching `.rlib` means `cargo check` was used
 /// - a `test-*` fingerprint file means tests were compiled
-/// - nothing found at all falls back to a plain build
+/// - an empty result means nothing was built in this profile yet
 pub fn probe_intents(profile_dir: &Path) -> Vec<CollectIntent> {
     let mut intents = Vec::new();
 
@@ -95,10 +95,6 @@ pub fn probe_intents(profile_dir: &Path) -> Vec<CollectIntent> {
         intents.push(CollectIntent::Test);
     }
 
-    if intents.is_empty() {
-        // Brand new profile directory: use the plain build as the baseline.
-        intents.push(CollectIntent::Build);
-    }
     intents.sort_by_key(|intent| match intent {
         CollectIntent::Build => 0,
         CollectIntent::Check => 1,
@@ -260,11 +256,11 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_intents_empty_dir_falls_back_to_build() {
+    fn test_probe_intents_empty_dir_returns_nothing() {
         let tmp = std::env::temp_dir().join(format!("cargo-gc-probe-empty-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let intents = probe_intents(&tmp);
         std::fs::remove_dir_all(&tmp).unwrap();
-        assert_eq!(intents, vec![CollectIntent::Build]);
+        assert!(intents.is_empty());
     }
 }

@@ -25,8 +25,9 @@ It will check and remove all outdated build artifacts in the current project. Se
 To keep live artifacts alive, `cargo gc` runs a few `cargo` invocations of the
 current toolchain and collects the produced artifact hashes. By default it
 probes the target directory and only collects the intents that were actually
-used there (a plain build if the directory is empty). The set can be
-overridden, in decreasing precedence:
+used there. If the directory holds no artifacts at all, gc warns and does
+nothing instead of inventing artifacts to keep. The set can be overridden,
+in decreasing precedence:
 
 - CLI: `cargo gc --collect build --collect check`
 - Env var: `CARGO_GC_COLLECT=build,check cargo gc`
