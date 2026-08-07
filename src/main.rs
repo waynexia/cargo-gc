@@ -97,10 +97,10 @@ fn resolve_intents(
         return Ok(cli.to_vec());
     }
 
-    if let Ok(values) = std::env::var("CARGO_GC_COLLECT") {
-        if !values.trim().is_empty() {
-            return parse_intent_list_or_err("CARGO_GC_COLLECT", &values);
-        }
+    if let Ok(values) = std::env::var("CARGO_GC_COLLECT")
+        && !values.trim().is_empty()
+    {
+        return parse_intent_list_or_err("CARGO_GC_COLLECT", &values);
     }
 
     if let Some(root) = metadata.root_package()
