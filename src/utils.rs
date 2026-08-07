@@ -2,6 +2,19 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Split a file stem like `libfoo-0123abcd...` (or `foo-0123abcd...d`) into
+/// `(name, hash)`. Only accepts cargo's 16-hex-digit artifact hashes so that
+/// unrelated names like `weird-name` are rejected.
+pub fn extract_fingerprint(path: &Path) -> Option<(String, String)> {
+    let stem = path.file_stem()?.to_str()?;
+    let (name, hash) = stem.rsplit_once('-')?;
+    if hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some((name.to_string(), hash.to_string()))
+    } else {
+        None
+    }
+}
+
 /// Convert profile name to target directory name
 /// Cargo's built-in profiles map to these output directories.
 pub fn profile_to_dir(profile: &str) -> &str {
@@ -42,6 +55,19 @@ pub fn path_size(path: &Path) -> u64 {
         .filter_map(|entry| entry.ok())
         .map(|entry| path_size(&entry.path()))
         .sum()
+}
+
+/// Render a path for display: relative to the current directory when
+/// possible, falling back to the absolute form (e.g. across drives).
+pub fn display_path(path: &Path) -> String {
+    match std::env::current_dir() {
+        Ok(cwd) => path
+            .strip_prefix(&cwd)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned(),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
 }
 
 pub fn remove_files(paths: &HashSet<PathBuf>) -> RemovalStats {
@@ -93,6 +119,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_extract_fingerprint() {
+        assert_eq!(
+            extract_fingerprint(Path::new("libfoo-0123456789abcdef.rlib")),
+            Some(("libfoo".to_string(), "0123456789abcdef".to_string()))
+        );
+        assert_eq!(
+            extract_fingerprint(Path::new("foo-0123456789abcdef.d")),
+            Some(("foo".to_string(), "0123456789abcdef".to_string()))
+        );
+        assert_eq!(extract_fingerprint(Path::new("README")), None);
+        assert_eq!(
+            extract_fingerprint(Path::new("prefix-abc-not-a-hash")),
+            None
+        );
+    }
+
+    #[test]
     fn test_profile_to_dir() {
         assert_eq!(profile_to_dir("dev"), "debug");
         assert_eq!(profile_to_dir("test"), "debug");
@@ -107,5 +150,12 @@ mod tests {
             path_size(Path::new("/tmp/cargo-gc-utils-definitely-missing")),
             0
         );
+    }
+
+    #[test]
+    fn test_display_path_relativizes_to_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = Path::new("target").join("debug").to_string_lossy().into_owned();
+        assert_eq!(display_path(&cwd.join("target").join("debug")), expected);
     }
 }

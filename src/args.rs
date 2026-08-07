@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand, command};
+use clap::{Parser, Subcommand};
+
+use crate::catalog::CollectIntent;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -29,8 +31,13 @@ struct GcCommand {
     release: bool,
 
     /// GC artifacts with the specified profile
-    #[arg(long)]
+    #[arg(short, long)]
     profile: Option<String>,
+
+    /// Only collect the given intent(s): build, check or test. Repeatable.
+    /// Defaults to probing the target directory for the intents in use.
+    #[arg(short, long)]
+    collect: Vec<CollectIntent>,
 
     /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments.
     #[arg(trailing_var_arg = true)]
@@ -41,12 +48,13 @@ pub struct Args {
     pub profile: String,
     pub verbose: bool,
     pub dry_run: bool,
+    pub collect: Vec<CollectIntent>,
     pub cargo_args: Vec<String>,
 }
 
-impl Args {
-    pub fn from_cli(cli: Cli) -> Self {
-        let Command::Gc(cli) = cli.command;
+impl From<Cli> for Args {
+    fn from(value: Cli) -> Self {
+        let Command::Gc(cli) = value.command;
         let profile = match (cli.profile, cli.release) {
             (None, true) => "release".into(),
             (None, false) => "dev".into(),
@@ -61,6 +69,7 @@ impl Args {
             profile,
             verbose,
             dry_run,
+            collect: cli.collect,
             cargo_args: cli.cargo_args,
         }
     }
