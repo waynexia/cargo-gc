@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+use crate::catalog::CollectIntent;
+
 #[derive(Parser)]
 #[command(author, version, about)]
 #[command(propagate_version = true)]
@@ -32,6 +34,11 @@ struct GcCommand {
     #[arg(long)]
     profile: Option<String>,
 
+    /// Only collect the given intent(s): build, check or test. Repeatable.
+    /// Defaults to probing the target directory for the intents in use.
+    #[arg(long, value_enum)]
+    collect: Vec<CollectIntent>,
+
     /// Arguments pass to `cargo build`, use `--` to separate from `cargo-gc` arguments.
     #[arg(trailing_var_arg = true)]
     cargo_args: Vec<String>,
@@ -41,6 +48,7 @@ pub struct Args {
     pub profile: String,
     pub verbose: bool,
     pub dry_run: bool,
+    pub collect: Vec<CollectIntent>,
     pub cargo_args: Vec<String>,
 }
 
@@ -61,6 +69,7 @@ impl Args {
             profile,
             verbose,
             dry_run,
+            collect: cli.collect,
             cargo_args: cli.cargo_args,
         }
     }

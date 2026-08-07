@@ -10,7 +10,7 @@ use clap::Parser;
 use humansize::DECIMAL;
 
 use crate::beatrice::{Beatrice, CleanupPlan};
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, CollectIntent, parse_intent_list, probe_intents};
 use crate::utils::{RemovalStats, profile_to_dir, remove_dirs, remove_files};
 
 /// Collect the profile flag forwarded via trailing cargo args, e.g.
@@ -55,6 +55,44 @@ fn print_plan_paths(plan: &CleanupPlan) {
     println!("incremental dirs to remove {:#?}", plan.incremental_dirs);
 }
 
+/// Resolve which intents to collect. Precedence: CLI first, then the
+/// `CARGO_GC_COLLECT` env var, then the `[package.metadata.cargo-gc]` table
+/// of the root manifest, then probing the target directory.
+fn resolve_intents(
+    cli: &[CollectIntent],
+    profile_dir: &std::path::Path,
+    metadata: &cargo_metadata::Metadata,
+) -> Vec<CollectIntent> {
+    if !cli.is_empty() {
+        return cli.to_vec();
+    }
+
+    if let Ok(values) = std::env::var("CARGO_GC_COLLECT") {
+        let parsed = parse_intent_list(&values);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
+    if let Some(root) = metadata.root_package()
+        && let Some(config) = root.metadata.get("cargo-gc")
+        && let Some(collect) = config.get("collect")
+        && let Some(items) = collect.as_array()
+    {
+        let text = items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let parsed = parse_intent_list(&text);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
+    probe_intents(profile_dir)
+}
+
 fn main() -> Result<()> {
     let args = Args::from_cli(Cli::parse());
 
@@ -84,8 +122,21 @@ fn main() -> Result<()> {
         .target_directory
         .join(profile_to_dir(&effective_profile));
 
+    let intents = resolve_intents(&args.collect, profile_path.as_std_path(), &metadata);
+    let intent_names = intents
+        .iter()
+        .map(|intent| match intent {
+            CollectIntent::Build => "build",
+            CollectIntent::Check => "check",
+            CollectIntent::Test => "test",
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("Collecting live artifacts from: {intent_names}");
+
     let catalog = Catalog::collect(
         profile_path.as_std_path(),
+        &intents,
         profile_arg.as_deref(),
         &args.cargo_args,
     )
