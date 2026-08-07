@@ -11,7 +11,9 @@ use humansize::DECIMAL;
 
 use crate::beatrice::{Beatrice, CleanupPlan};
 use crate::catalog::{Catalog, CollectIntent, parse_intent_list, probe_intents};
-use crate::utils::{RemovalStats, path_size, profile_to_dir, remove_dirs, remove_files};
+use crate::utils::{
+    RemovalStats, display_path, path_size, profile_to_dir, remove_dirs, remove_files,
+};
 
 /// Collect the profile flag forwarded via trailing cargo args, e.g.
 /// `--profile release`, `--profile=release` or `--release`.
@@ -72,7 +74,7 @@ fn print_plan_paths(plan: &CleanupPlan) {
         let mut sorted: Vec<_> = paths.iter().collect();
         sorted.sort();
         for path in sorted {
-            println!("  {}", path.display());
+            println!("  {}", display_path(path));
         }
     }
 }
@@ -186,7 +188,7 @@ fn main() -> Result<()> {
         catalog.hashes.len()
     );
 
-    println!("Scanning {}", profile_path);
+    println!("Scanning {}", display_path(profile_path.as_std_path()));
     let betty = Beatrice::scan(profile_path.as_std_path()).context("failed to scan the project")?;
     println!("{}", betty.report());
 
@@ -213,9 +215,9 @@ fn main() -> Result<()> {
         format!(", {} paths failed to remove", stats.failed_paths)
     };
     println!(
-        "Removed {} filesystem entries from {:?}, {} total{}",
+        "Removed {} filesystem entries from {}, {} total{}",
         stats.removed_paths,
-        profile_path,
+        display_path(profile_path.as_std_path()),
         humansize::format_size(stats.reclaimed_bytes, DECIMAL),
         fail_report,
     );

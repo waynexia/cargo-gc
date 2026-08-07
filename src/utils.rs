@@ -57,6 +57,19 @@ pub fn path_size(path: &Path) -> u64 {
         .sum()
 }
 
+/// Render a path for display: relative to the current directory when
+/// possible, falling back to the absolute form (e.g. across drives).
+pub fn display_path(path: &Path) -> String {
+    match std::env::current_dir() {
+        Ok(cwd) => path
+            .strip_prefix(&cwd)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned(),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
 pub fn remove_files(paths: &HashSet<PathBuf>) -> RemovalStats {
     let mut stats = RemovalStats::default();
 
@@ -137,5 +150,12 @@ mod tests {
             path_size(Path::new("/tmp/cargo-gc-utils-definitely-missing")),
             0
         );
+    }
+
+    #[test]
+    fn test_display_path_relativizes_to_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = Path::new("target").join("debug").to_string_lossy().into_owned();
+        assert_eq!(display_path(&cwd.join("target").join("debug")), expected);
     }
 }
