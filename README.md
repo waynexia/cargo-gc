@@ -26,9 +26,18 @@ To keep live artifacts alive, `cargo gc` runs a few `cargo` invocations of the c
 
 - CLI: `cargo gc --collect build --collect check`
 - Env var: `CARGO_GC_COLLECT=build,check cargo gc`
-- Manifest: `[package.metadata.cargo-gc] collect = ["build", "check"]`
+- Manifest: `[package.metadata.cargo-gc] collect = ["build", "check"]`, with an
+	optional per-profile override:
+	~~~toml
+	[package.metadata.cargo-gc]                  # default for every profile
+	collect = ["build", "check"]
+	[package.metadata.cargo-gc.profile.release]  # only for release
+	collect = ["build", "test"]
+	~~~
 
 Valid values are `build`, `check` and `test`. Collecting an intent that was never used will first produce those artifacts and then keep them, so a minimal set keeps the cache lean while a full set avoids recompilation.
+
+`cargo gc` only manages host artifacts inside the profile directory; forwarded `--target` arguments are ignored so the collected hashes always match the scanned directory.
 
 # Limitations / Known issues
 - [x] Invokes `cargo build`, `cargo check` and `cargo test --no-run` once to reconcile the cache with the current toolchain.

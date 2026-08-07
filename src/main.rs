@@ -37,6 +37,30 @@ fn forwarded_profile(cargo_args: &[String]) -> (Option<String>, bool) {
     (None, false)
 }
 
+/// Remove `--target <triple>` / `--target=<triple>` from forwarded cargo
+/// args. cargo-gc only manages host artifacts in the profile directory, so a
+/// forwarded target would redirect produced files to `target/<triple>/...`
+/// and make the collected hashes mismatch the scanned directory.
+fn strip_target_args(cargo_args: &[String]) -> Vec<String> {
+    let mut filtered = Vec::with_capacity(cargo_args.len());
+    let mut i = 0;
+    while i < cargo_args.len() {
+        match cargo_args[i].as_str() {
+            "--target" => {
+                i += 2;
+            }
+            arg if arg.starts_with("--target=") => {
+                i += 1;
+            }
+            _ => {
+                filtered.push(cargo_args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    filtered
+}
+
 fn report_cleanup_plan(plan: &CleanupPlan) {
     let reclaim = plan_reclaim_bytes(plan);
     println!(
@@ -84,6 +108,7 @@ fn print_plan_paths(plan: &CleanupPlan) {
 /// of the root manifest, then probing the target directory.
 fn resolve_intents(
     cli: &[CollectIntent],
+    profile: &str,
     profile_dir: &std::path::Path,
     metadata: &cargo_metadata::Metadata,
 ) -> Result<Vec<CollectIntent>> {
@@ -97,23 +122,77 @@ fn resolve_intents(
         return parse_intent_list_or_err("CARGO_GC_COLLECT", &values);
     }
 
-    if let Some(root) = metadata.root_package()
-        && let Some(config) = root.metadata.get("cargo-gc")
-        && let Some(collect) = config.get("collect")
-        && let Some(items) = collect.as_array()
+    if let Some(intents) =
+        collect_from_metadata(metadata, profile, "collect")?
     {
-        if items.is_empty() {
-            return Ok(probe_intents(profile_dir));
-        }
-        let text = items
-            .iter()
-            .filter_map(|item| item.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        return parse_intent_list_or_err("[package.metadata.cargo-gc] collect", &text);
+        return Ok(intents);
     }
 
     Ok(probe_intents(profile_dir))
+}
+
+/// Resolve the `collect` list from `[package.metadata.cargo-gc]`, preferring
+/// the per-profile table:
+///
+/// ```toml
+/// [package.metadata.cargo-gc]
+/// collect = ["check"]
+/// [package.metadata.cargo-gc.profile.release]
+/// collect = ["build", "test"]
+/// ```
+///
+/// An empty list (or no list at all) means "not configured here".
+fn collect_from_metadata(
+    metadata: &cargo_metadata::Metadata,
+    profile: &str,
+    key: &str,
+) -> Result<Option<Vec<CollectIntent>>> {
+    let Some(root) = metadata.root_package() else {
+        return Ok(None);
+    };
+    let Some(config) = root.metadata.get("cargo-gc") else {
+        return Ok(None);
+    };
+
+    // Per-profile table wins over the global one.
+    let per_profile = config
+        .get("profile")
+        .and_then(|profiles| profiles.get(profile))
+        .and_then(|spec| spec.get(key))
+        .and_then(|value| value.as_array());
+    if let Some(items) = per_profile
+        && !items.is_empty()
+    {
+        return parse_collect_items(
+            &format!("[package.metadata.cargo-gc.profile.{profile}] {key}"),
+            items,
+        )
+        .map(Some);
+    }
+
+    if let Some(items) = config.get(key).and_then(|value| value.as_array())
+        && !items.is_empty()
+    {
+        return parse_collect_items(
+            &format!("[package.metadata.cargo-gc] {key}"),
+            items,
+        )
+        .map(Some);
+    }
+
+    Ok(None)
+}
+
+fn parse_collect_items(
+    source: &str,
+    items: &[serde_json::Value],
+) -> Result<Vec<CollectIntent>> {
+    let text = items
+        .iter()
+        .filter_map(|item| item.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    parse_intent_list_or_err(source, &text)
 }
 
 /// Parse an intent list, failing loudly when the source provided a value
@@ -157,7 +236,12 @@ fn main() -> Result<()> {
         .target_directory
         .join(profile_to_dir(&effective_profile));
 
-    let intents = resolve_intents(&args.collect, profile_path.as_std_path(), &metadata)?;
+    let intents = resolve_intents(
+        &args.collect,
+        &effective_profile,
+        profile_path.as_std_path(),
+        &metadata,
+    )?;
     if intents.is_empty() {
         println!(
             "Warning: no build artifacts found in {profile_path} yet, nothing to do.\n\
@@ -176,11 +260,15 @@ fn main() -> Result<()> {
         .join(", ");
     println!("Collecting live artifacts: {intent_names}");
 
+    let forwarded_args = strip_target_args(&args.cargo_args);
+    if forwarded_args.len() != args.cargo_args.len() {
+        println!("Note: ignoring --target, gc only manages the host profile directory");
+    }
     let catalog = Catalog::collect(
         profile_path.as_std_path(),
         &intents,
         profile_arg.as_deref(),
-        &args.cargo_args,
+        &forwarded_args,
     )
     .context("failed to collect live artifacts from the current toolchain")?;
     println!(
@@ -222,4 +310,40 @@ fn main() -> Result<()> {
         fail_report,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_target_args() {
+        let args = vec![
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+            "--features".to_string(),
+            "foo".to_string(),
+            "--target=wasm32-unknown-unknown".to_string(),
+        ];
+        assert_eq!(
+            strip_target_args(&args),
+            vec!["--features".to_string(), "foo".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_collect_items_with_garbage() {
+        let items = vec![
+            serde_json::Value::String("build".to_string()),
+            serde_json::Value::String("bogus".to_string()),
+        ];
+        // Unknown values are skipped; known ones are kept.
+        assert_eq!(
+            parse_collect_items("test", &items).unwrap(),
+            vec![CollectIntent::Build]
+        );
+
+        let all_garbage = vec![serde_json::Value::String("nope".to_string())];
+        assert!(parse_collect_items("test", &all_garbage).is_err());
+    }
 }
