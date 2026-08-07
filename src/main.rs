@@ -92,15 +92,14 @@ fn resolve_intents(
     cli: &[CollectIntent],
     profile_dir: &std::path::Path,
     metadata: &cargo_metadata::Metadata,
-) -> Vec<CollectIntent> {
+) -> Result<Vec<CollectIntent>> {
     if !cli.is_empty() {
-        return cli.to_vec();
+        return Ok(cli.to_vec());
     }
 
     if let Ok(values) = std::env::var("CARGO_GC_COLLECT") {
-        let parsed = parse_intent_list(&values);
-        if !parsed.is_empty() {
-            return parsed;
+        if !values.trim().is_empty() {
+            return parse_intent_list_or_err("CARGO_GC_COLLECT", &values);
         }
     }
 
@@ -109,18 +108,30 @@ fn resolve_intents(
         && let Some(collect) = config.get("collect")
         && let Some(items) = collect.as_array()
     {
+        if items.is_empty() {
+            return Ok(probe_intents(profile_dir));
+        }
         let text = items
             .iter()
             .filter_map(|item| item.as_str())
             .collect::<Vec<_>>()
             .join(",");
-        let parsed = parse_intent_list(&text);
-        if !parsed.is_empty() {
-            return parsed;
-        }
+        return parse_intent_list_or_err("[package.metadata.cargo-gc] collect", &text);
     }
 
-    probe_intents(profile_dir)
+    Ok(probe_intents(profile_dir))
+}
+
+/// Parse an intent list, failing loudly when the source provided a value
+/// but none of it was understood.
+fn parse_intent_list_or_err(source: &str, values: &str) -> Result<Vec<CollectIntent>> {
+    let parsed = parse_intent_list(values);
+    if parsed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{source} has no valid intent values ({values:?}), expected build, check and/or test"
+        ));
+    }
+    Ok(parsed)
 }
 
 fn main() -> Result<()> {
@@ -152,7 +163,7 @@ fn main() -> Result<()> {
         .target_directory
         .join(profile_to_dir(&effective_profile));
 
-    let intents = resolve_intents(&args.collect, profile_path.as_std_path(), &metadata);
+    let intents = resolve_intents(&args.collect, profile_path.as_std_path(), &metadata)?;
     let intent_names = intents
         .iter()
         .map(|intent| match intent {
